@@ -60,6 +60,9 @@ def test_index_and_status(make_client):
     page = client.get("/")
     assert page.status_code == 200 and "Self-AI" in page.text
     assert client.get("/static/app.js").status_code == 200
+    sw = client.get("/sw.js")  # served from the root so the installed app also opens offline
+    assert sw.status_code == 200 and sw.headers["content-type"].startswith("text/javascript")
+    assert "/api/" in sw.text  # API calls are never served from the cache
     manifest = client.get("/static/manifest.webmanifest")
     assert manifest.headers["content-type"].startswith("application/manifest+json")
     assert manifest.json()["display"] == "standalone"

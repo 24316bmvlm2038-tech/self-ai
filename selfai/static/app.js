@@ -734,6 +734,10 @@ function handleStreamEvent(raw, view) {
   scrollToBottom(false, view.root);
 }
 
+const NOT_RUNNING_HELP =
+  "Self-AI isn't running. Tap the **Self-AI** widget on your home screen, or open Termux and type `selfai`. " +
+  'This page connects by itself as soon as it is running.';
+
 const OFFLINE_HELP =
   "Lost connection to Self-AI: it stopped running. On a phone this usually means Android closed Termux to free " +
   'memory. Open Termux and type `selfai` to start it again; this page reconnects by itself. If it keeps happening, ' +
@@ -1146,9 +1150,9 @@ function updateThinkButton() {
   btn.setAttribute('aria-pressed', String(state.thinking));
 }
 
-// Escape text, then show `backticked` parts as code.
+// Escape text, then show `backticked` parts as code and **starred** parts in bold.
 function richText(text) {
-  return escapeHtml(text).replace(/`([^`]+)`/g, '<code>$1</code>');
+  return escapeHtml(text).replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
 }
 
 async function loadStatus() {
@@ -1156,11 +1160,20 @@ async function loadStatus() {
     state.status = await api('/api/status');
   } catch {
     const banner = $('#setup-banner');
-    banner.innerHTML = richText(OFFLINE_HELP);
+    banner.innerHTML = richText(NOT_RUNNING_HELP);
     banner.classList.remove('hidden');
     $('#status-line').innerHTML = '';
     $('#status-line').append(el('div', {}, el('span', { class: 'dot bad' }), 'Not running'));
+    state.offline = true;
+    clearTimeout(state.timers.status);
+    state.timers.status = setTimeout(loadStatus, 3000);
     return;
+  }
+  if (state.offline) {
+    // Came back (e.g. started from the widget): load everything that failed while offline.
+    state.offline = false;
+    loadConversations().then(() => { if (state.convId) openConversation(state.convId, { updateHash: false }); });
+    loadTasks();
   }
   const s = state.status;
   const local = s.provider === 'ollama';
@@ -1334,6 +1347,7 @@ function route() {
 
 function init() {
   hydrateIcons();
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
   $('#new-chat').addEventListener('click', newChat);
   $$('.views .nav-btn').forEach((b) => b.addEventListener('click', () => setView(b.dataset.view)));
   $('#open-sidebar').addEventListener('click', openSidebar);

@@ -34,9 +34,17 @@ You can also download any other model from [ollama.com/library](https://ollama.c
    This installs everything, downloads a model that fits your phone, and opens Self-AI in your browser. The download is several GB, so use Wi-Fi.
 3. In Chrome, tap **⋮ → Add to Home screen** (or **Install app**) so Self-AI opens like a normal app.
 
-Next time, open Termux and type `selfai`. Keep Termux running in the background while you use the app. Background tasks also only run while Termux is running, and the phone stays awake while it does.
+Next time, open Termux and type `selfai`, or use the home-screen button below. Keep Termux running in the background while you use the app. Background tasks also only run while Termux is running, and the phone stays awake while it does.
 
 **What to expect:** the AI runs on the phone's processor. Replies take a few seconds to start, and longer for the very first message or with **Think** on. A phone with 8 GB+ RAM and a recent chip works best.
+
+### Use it like a normal app
+
+1. **App icon:** open Self-AI in Chrome, tap **⋮ → Add to Home screen** (or **Install app**) → **Install**. It opens full-screen without the browser bar. If Self-AI isn't running, the app says so and connects by itself once it starts.
+2. **One-tap start:** install **Termux:Widget** from [F-Droid](https://f-droid.org/packages/com.termux.widget/), then long-press your home screen → **Widgets** → **Termux:Widget** and drag it onto the screen. Tap **Self-AI** in it to start Self-AI and open the app. If it's already running, it just opens the app.
+3. **Start automatically when the phone turns on (optional):** install **Termux:Boot** from [F-Droid](https://f-droid.org/packages/com.termux.boot/) and open it once. Self-AI then starts in the background after every restart, so the app icon always works.
+
+Install the add-ons from F-Droid, like Termux itself. Versions from different stores don't work together. The shortcut files are created the next time you run `selfai`.
 
 ### If you see "Lost connection" or "network error"
 

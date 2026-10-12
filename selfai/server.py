@@ -473,6 +473,10 @@ def create_app(
     async def index(request: Request) -> FileResponse:
         return FileResponse(STATIC_DIR / "index.html", headers={"Cache-Control": "no-cache"})
 
+    async def service_worker(request: Request) -> FileResponse:
+        # Served from the root so it can make the whole app work offline.
+        return FileResponse(STATIC_DIR / "sw.js", media_type="text/javascript", headers={"Cache-Control": "no-cache"})
+
     @asynccontextmanager
     async def lifespan(app: Starlette):
         starting = asyncio.create_task(ollama.ensure_running()) if settings.is_local else None
@@ -489,6 +493,7 @@ def create_app(
 
     routes = [
         Route("/", index),
+        Route("/sw.js", service_worker),
         Route("/api/status", status),
         Route("/api/models", list_models),
         Route("/api/models", delete_model, methods=["DELETE"]),

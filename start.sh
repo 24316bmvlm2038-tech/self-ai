@@ -34,6 +34,39 @@ if [ ! -f .env ]; then
   fi
 fi
 
+port=$(python -c "from selfai.config import Settings; print(Settings.from_env().port)")
+open_app() {
+  if $termux && [ -z "${SELFAI_NO_BROWSER:-}" ] && command -v termux-open-url >/dev/null 2>&1; then
+    termux-open-url "http://localhost:$port"
+  fi
+}
+
+if $termux; then
+  # Home-screen shortcuts: the Termux:Widget add-on shows ~/.shortcuts as a one-tap "Self-AI"
+  # button, and the Termux:Boot add-on runs ~/.termux/boot at phone start-up. Without those
+  # add-ons these files are simply unused.
+  mkdir -p "$HOME/.shortcuts" "$HOME/.termux/boot"
+  printf '#!/data/data/com.termux/files/usr/bin/bash\nexec "%s/start.sh"\n' "$PWD" > "$HOME/.shortcuts/Self-AI"
+  printf '#!/data/data/com.termux/files/usr/bin/bash\ntermux-wake-lock\ncd "%s" && mkdir -p data && SELFAI_NO_BROWSER=1 nohup ./start.sh > data/selfai.log 2>&1 &\n' \
+    "$PWD" > "$HOME/.termux/boot/self-ai"
+  chmod +x "$HOME/.shortcuts/Self-AI" "$HOME/.termux/boot/self-ai"
+fi
+
+# Already running (e.g. started at boot, or the widget was tapped twice)? Just open the app.
+answers() {  # any HTTP answer (even "password required") means Self-AI is running
+  python -c "
+import sys, urllib.error, urllib.request
+try:
+    urllib.request.urlopen(sys.argv[1], timeout=2)
+except urllib.error.HTTPError:
+    pass" "$1" >/dev/null 2>&1
+}
+if answers "http://127.0.0.1:$port/api/status"; then
+  echo "Self-AI is already running at http://localhost:$port"
+  open_app
+  exit 0
+fi
+
 # Make sure Ollama is running when using local models.
 read -r provider ollama_url < <(python -c "from selfai.config import Settings; s = Settings.from_env(); print(s.provider, s.ollama_url)")
 ollama_up() { python -c "import sys, urllib.request; urllib.request.urlopen(sys.argv[1] + '/api/version', timeout=2)" "$ollama_url" >/dev/null 2>&1; }
@@ -55,11 +88,10 @@ if [ "$provider" = "ollama" ] && ! ollama_up; then
   fi
 fi
 
-port=$(python -c "from selfai.config import Settings; print(Settings.from_env().port)")
 if $termux; then
   # Keep running (and finishing background tasks) while the screen is off.
   command -v termux-wake-lock >/dev/null 2>&1 && termux-wake-lock
-  command -v termux-open-url >/dev/null 2>&1 && (sleep 4; termux-open-url "http://localhost:$port") &
+  (sleep 4; open_app) &
 
   # Android sometimes kills background processes to free memory. Start Self-AI again
   # when that happens (Ctrl+C still quits; a crash right at startup is not retried).
