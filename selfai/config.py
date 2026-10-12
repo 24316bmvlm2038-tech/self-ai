@@ -48,7 +48,7 @@ def _env_float(name: str, default: float) -> float:
     return float(value) if value else default
 
 
-PROVIDERS = ("ollama", "deepseek")
+PROVIDERS = ("ollama", "groq", "gemini", "openrouter", "deepseek")
 DEFAULT_LOCAL_MODEL = "qwen3.5:4b"
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
 
@@ -80,6 +80,8 @@ class Settings:
     host: str = "127.0.0.1"
     port: int = 8000
     password: str = ""
+    # The public web address, if Self-AI is reachable from the internet (see setup-url.sh).
+    public_url: str = ""
     # Host names the UI may be reached under (guards against DNS rebinding). "*" allows any.
     allowed_hosts: list[str] = field(default_factory=lambda: ["localhost", "127.0.0.1", "::1"])
 
@@ -140,19 +142,25 @@ class Settings:
             raise ValueError(f"SELFAI_PROVIDER must be one of {', '.join(PROVIDERS)}, got '{provider}'")
         local = provider == "ollama"
 
+        deepseek_models = [m.strip() for m in env("DEEPSEEK_MODELS", "").split(",") if m.strip()]
+        deepseek_models = deepseek_models or ["deepseek-chat", "deepseek-reasoner"]
         if local:
             model = env("SELFAI_MODEL", "").strip() or DEFAULT_LOCAL_MODEL
-            models: list[str] = []
-        else:
+        elif provider == "deepseek":
             model = env("SELFAI_MODEL", "").strip() or env("DEEPSEEK_MODEL", "").strip() or "deepseek-chat"
-            models = [m.strip() for m in env("DEEPSEEK_MODELS", "").split(",") if m.strip()]
-            models = models or ["deepseek-chat", "deepseek-reasoner"]
-            if model not in models:
-                models.insert(0, model)
+            if model not in deepseek_models:
+                deepseek_models.insert(0, model)
+        else:
+            model = env("SELFAI_MODEL", "").strip()  # empty: the provider's default
 
-        # Small local models have small context windows: keep prompts and tool output compact.
+        # Small local models have small context windows, and some free cloud plans allow few
+        # tokens per minute: keep prompts and tool output compact for those.
+        compact = provider in ("ollama", "groq", "openrouter")
         context_tokens = _env_int("SELFAI_CONTEXT_TOKENS", 8192 if local else 64_000)
-        default_history = max(8_000, context_tokens * 3 - 10_000) if local else 200_000
+        if local:
+            default_history = max(8_000, context_tokens * 3 - 10_000)
+        else:
+            default_history = 16_000 if compact else 200_000
         temperature = env("SELFAI_TEMPERATURE", "").strip() or env("DEEPSEEK_TEMPERATURE", "").strip()
         return cls(
             provider=provider,
@@ -164,20 +172,21 @@ class Settings:
             task_thinking=_env_bool("SELFAI_TASK_THINKING", True),
             api_key=api_key,
             base_url=(env("DEEPSEEK_BASE_URL", "").strip() or DEFAULT_BASE_URL).rstrip("/"),
-            models=models,
+            models=deepseek_models,
             data_dir=Path(env("SELFAI_DATA_DIR", "").strip() or "data"),
             host=env("SELFAI_HOST", "").strip() or "127.0.0.1",
             port=_env_int("SELFAI_PORT", 8000),
             password=env("SELFAI_PASSWORD", ""),
+            public_url=env("SELFAI_PUBLIC_URL", "").strip().rstrip("/"),
             allowed_hosts=[
                 h.strip().lower()
                 for h in (env("SELFAI_ALLOWED_HOSTS", "").strip() or "localhost,127.0.0.1,::1").split(",")
                 if h.strip()
             ],
-            chat_max_steps=_env_int("SELFAI_CHAT_MAX_STEPS", 15 if local else 25),
-            task_max_steps=_env_int("SELFAI_TASK_MAX_STEPS", 30 if local else 50),
+            chat_max_steps=_env_int("SELFAI_CHAT_MAX_STEPS", 15 if compact else 25),
+            task_max_steps=_env_int("SELFAI_TASK_MAX_STEPS", 30 if compact else 50),
             tool_timeout_seconds=_env_int("SELFAI_TOOL_TIMEOUT", 120),
-            max_tool_result_chars=_env_int("SELFAI_MAX_TOOL_RESULT_CHARS", 6_000 if local else 20_000),
+            max_tool_result_chars=_env_int("SELFAI_MAX_TOOL_RESULT_CHARS", 6_000 if compact else 20_000),
             history_max_chars=_env_int("SELFAI_HISTORY_MAX_CHARS", default_history),
             max_concurrent_tasks=max(1, _env_int("SELFAI_MAX_CONCURRENT_TASKS", 1 if local else 2)),
             max_active_tasks=max(1, _env_int("SELFAI_MAX_ACTIVE_TASKS", 50)),

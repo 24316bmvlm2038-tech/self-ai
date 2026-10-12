@@ -90,11 +90,10 @@ def test_status_with_deepseek(make_client, settings):
     settings.model = "deepseek-chat"
     client = make_client()
     status = client.get("/api/status").json()
-    assert status["problem_code"] == "config" and "DEEPSEEK_API_KEY" in status["problem"]
+    assert status["problem_code"] == "config" and "DeepSeek key in Models" in status["problem"]
     settings.api_key = "sk-test"
     status = client.get("/api/status").json()
     assert status["ready"] and status["models"] == ["deepseek-chat", "deepseek-reasoner"]
-    assert client.post("/api/models/pull", json={"name": "x"}, headers=H).status_code == 400
     assert client.post("/api/models/active", json={"name": "gpt-9"}, headers=H).status_code == 400
     assert client.post("/api/models/active", json={"name": "deepseek-reasoner"}, headers=H).status_code == 200
     assert client.get("/api/status").json()["model"] == "deepseek-reasoner"
@@ -173,7 +172,7 @@ def test_chat_errors(make_client, settings):
     r = client.post(url, json={"content": "x", "model": "gpt-9"}, headers=H)
     assert r.status_code == 400 and "Unknown model" in r.json()["detail"]
     events = stream_events(client, conv["id"], "hello")
-    assert events[-1]["type"] == "error" and "DEEPSEEK_API_KEY" in events[-1]["error"]
+    assert events[-1]["type"] == "error" and "DeepSeek key in Models" in events[-1]["error"]
 
 
 def test_chat_with_local_model_end_to_end(settings, fake_ollama):

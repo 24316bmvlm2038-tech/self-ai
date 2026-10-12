@@ -3,7 +3,8 @@ import asyncio
 import pytest
 
 from selfai.db import Database
-from selfai.models import RECOMMENDED_MODELS, ModelManager, active_model, suggest_model
+from selfai.models import RECOMMENDED_MODELS, ModelManager, suggest_model
+from selfai.providers import active_model
 
 from .conftest import FakeOllama, run
 
@@ -116,9 +117,9 @@ def test_active_model_for_deepseek_must_be_offered(settings):
     settings.model = "deepseek-chat"
     settings.models = ["deepseek-chat", "deepseek-reasoner"]
     db = Database(settings.db_path)
-    db.set_setting("model", "qwen3.5:4b")  # left over from local mode
+    db.set_setting("model", "qwen3.5:4b")  # the on-device choice doesn't leak into DeepSeek
     assert active_model(db, settings) == "deepseek-chat"
-    db.set_setting("model", "deepseek-reasoner")
+    db.set_setting("model:deepseek", "deepseek-reasoner")
     assert active_model(db, settings) == "deepseek-reasoner"
 
 

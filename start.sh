@@ -34,7 +34,10 @@ if [ ! -f .env ]; then
   fi
 fi
 
-port=$(python -c "from selfai.config import Settings; print(Settings.from_env().port)")
+read -r port public_url has_password < <(python -c "
+from selfai.config import Settings
+s = Settings.from_env()
+print(s.port, s.public_url or '-', 'yes' if s.password else 'no')")
 open_app() {
   if $termux && [ -z "${SELFAI_NO_BROWSER:-}" ] && command -v termux-open-url >/dev/null 2>&1; then
     termux-open-url "http://localhost:$port"
@@ -50,6 +53,19 @@ if $termux; then
   printf '#!/data/data/com.termux/files/usr/bin/bash\ntermux-wake-lock\ncd "%s" && mkdir -p data && SELFAI_NO_BROWSER=1 nohup ./start.sh > data/selfai.log 2>&1 &\n' \
     "$PWD" > "$HOME/.termux/boot/self-ai"
   chmod +x "$HOME/.shortcuts/Self-AI" "$HOME/.termux/boot/self-ai"
+fi
+
+# Web address (set up with setup-url.sh): keep the Cloudflare tunnel running.
+tunnel_config="$HOME/.cloudflared/selfai.yml"
+if [ "$public_url" != "-" ] && [ -f "$tunnel_config" ] && command -v cloudflared >/dev/null 2>&1; then
+  mkdir -p data
+  if [ "$has_password" != "yes" ]; then
+    echo "Not opening $public_url: no password is set. Run: bash setup-url.sh"
+  elif ! { [ -f data/tunnel.pid ] && kill -0 "$(cat data/tunnel.pid)" 2>/dev/null; }; then
+    echo "Opening the web address $public_url"
+    nohup cloudflared tunnel --no-autoupdate --config "$tunnel_config" run > data/tunnel.log 2>&1 &
+    echo $! > data/tunnel.pid
+  fi
 fi
 
 # Already running (e.g. started at boot, or the widget was tapped twice)? Just open the app.

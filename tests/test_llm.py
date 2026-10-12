@@ -110,7 +110,7 @@ async def _noop():
     [
         (401, {"error": {"message": "Authentication Fails"}}, "rejected the API key"),
         (402, {"error": {"message": "Insufficient Balance"}}, "insufficient balance"),
-        (400, {"error": {"message": "bad thing"}}, "AI API error 400: bad thing"),
+        (400, {"error": {"message": "bad thing"}}, "DeepSeek error 400: bad thing"),
     ],
 )
 def test_deepseek_errors_are_explained(settings, status, body, expected):

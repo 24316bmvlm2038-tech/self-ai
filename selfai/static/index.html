@@ -26,7 +26,7 @@
     <nav class="views">
       <button class="nav-btn" data-view="tasks"><span data-icon="tasks"></span>Background tasks<span class="badge hidden" id="tasks-badge"></span></button>
       <button class="nav-btn" data-view="files"><span data-icon="folder"></span>Files</button>
-      <button class="nav-btn hidden" data-view="models" id="models-nav"><span data-icon="chip"></span>Models</button>
+      <button class="nav-btn" data-view="models" id="models-nav"><span data-icon="chip"></span>AI &amp; models</button>
     </nav>
     <div class="conversations" id="conversations"></div>
     <div class="sidebar-foot" id="status-line"></div>
@@ -80,9 +80,13 @@
     <!-- Models -->
     <section class="view hidden" id="view-models">
       <div class="panel">
+        <div class="section-title">Where your AI runs</div>
+        <p class="muted section-note">On this device is private but slow on phones. The free cloud options answer in seconds; your messages are sent to that company.</p>
+        <div id="providers" class="model-list"></div>
+        <div class="section-title">Models on this device</div>
         <div class="card models-intro">
           <h2>Free AI models</h2>
-          <p class="muted">These models run entirely on this device. They're free and private, and they work offline (only web browsing needs internet). Bigger models are smarter but slower and need more memory.</p>
+          <p class="muted">These run entirely on this device, used when "On this device" is selected above. They're free and private, and they work offline (only web browsing needs internet). Bigger models are smarter but slower and need more memory.</p>
           <div id="models-device" class="muted"></div>
         </div>
         <div id="models-error"></div>

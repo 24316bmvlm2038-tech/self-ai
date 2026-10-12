@@ -20,8 +20,10 @@ from typing import AsyncIterator, Protocol
 import httpx
 
 from .config import Settings
+from .db import Database
 from .errors import LLMError, api_error_message
 from .ollama import OllamaClient
+from .providers import LOCAL, active_model, active_provider, api_key, cloud_provider
 
 
 class LLM(Protocol):
@@ -82,18 +84,27 @@ def _split_events(pairs: list[tuple[str, str]]) -> list[dict]:
 
 
 class OpenAICompatLLM:
-    """DeepSeek's API (or any OpenAI-compatible chat completions endpoint)."""
+    """An OpenAI-compatible chat API: DeepSeek, Groq, Gemini, OpenRouter..."""
 
-    def __init__(self, settings: Settings, transport: httpx.AsyncBaseTransport | None = None):
+    def __init__(
+        self,
+        settings: Settings,
+        transport: httpx.AsyncBaseTransport | None = None,
+        *,
+        base_url: str | None = None,
+        api_key: str | None = None,
+        name: str = "DeepSeek",
+    ):
         self.settings = settings
         self._transport = transport
+        self.base_url = base_url or settings.base_url
+        self.api_key = settings.api_key if api_key is None else api_key
+        self.name = name
 
     @asynccontextmanager
     async def _open(self, body: dict):
         timeout = httpx.Timeout(600.0, connect=15.0)
-        async with httpx.AsyncClient(
-            base_url=self.settings.base_url, timeout=timeout, transport=self._transport
-        ) as client:
+        async with httpx.AsyncClient(base_url=self.base_url, timeout=timeout, transport=self._transport) as client:
             resp = await self._send(client, body)
             try:
                 yield resp
@@ -102,7 +113,7 @@ class OpenAICompatLLM:
 
     async def _send(self, client: httpx.AsyncClient, body: dict) -> httpx.Response:
         """Start the request, retrying connection failures, rate limits and server errors."""
-        headers = {"Authorization": f"Bearer {self.settings.api_key}"} if self.settings.api_key else {}
+        headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
         for attempt in range(3):
             retry = attempt < 2
             try:
@@ -110,9 +121,7 @@ class OpenAICompatLLM:
                 resp = await client.send(request, stream=True)
             except httpx.TransportError as exc:
                 if not retry:
-                    raise LLMError(
-                        f"Could not connect to {self.settings.base_url}. Check your internet connection."
-                    ) from exc
+                    raise LLMError(f"Could not connect to {self.name}. Check your internet connection.") from exc
                 await asyncio.sleep(2**attempt)
                 continue
             if resp.status_code < 400:
@@ -126,7 +135,7 @@ class OpenAICompatLLM:
                 detail = json.loads(detail)["error"]["message"]
             except (ValueError, KeyError, TypeError):
                 detail = detail[:500]
-            raise LLMError(api_error_message(resp.status_code, detail), resp.status_code)
+            raise LLMError(api_error_message(resp.status_code, detail, self.name), resp.status_code)
         raise AssertionError("unreachable")
 
     async def stream(
@@ -147,7 +156,7 @@ class OpenAICompatLLM:
                     break
                 chunk = json.loads(data)
                 if chunk.get("error"):
-                    raise LLMError(f"AI API error: {chunk['error'].get('message', chunk['error'])}")
+                    raise LLMError(f"{self.name} error: {chunk['error'].get('message', chunk['error'])}")
                 for choice in (chunk.get("choices") or [])[:1]:
                     delta = choice.get("delta") or {}
                     reasoning = delta.get("reasoning_content") or delta.get("reasoning")
@@ -259,5 +268,38 @@ class OllamaLLM:
                 yield {"type": "finish", "reason": chunk.get("done_reason")}
 
 
-def build_llm(settings: Settings, ollama: OllamaClient) -> LLM:
-    return OllamaLLM(settings, ollama) if settings.is_local else OpenAICompatLLM(settings)
+class RoutingLLM:
+    """Sends each request to the AI currently selected in the app (this device or a cloud API)."""
+
+    def __init__(
+        self,
+        settings: Settings,
+        db: Database,
+        ollama: OllamaClient,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ):
+        self.settings = settings
+        self.db = db
+        self.local = OllamaLLM(settings, ollama)
+        self._transport = transport
+
+    def stream(
+        self, messages: list[dict], tools: list[dict] | None = None, model: str | None = None, think: bool | None = None
+    ) -> AsyncIterator[dict]:
+        pid = active_provider(self.db, self.settings)
+        model = model or active_model(self.db, self.settings)
+        if pid == LOCAL:
+            return self.local.stream(messages, tools, model, think)
+        provider = cloud_provider(pid, self.settings)
+        cloud = OpenAICompatLLM(
+            self.settings,
+            self._transport,
+            base_url=provider.base_url,
+            api_key=api_key(self.db, self.settings, pid),
+            name=provider.name,
+        )
+        return cloud.stream(messages, tools, model, think)
+
+
+def build_llm(settings: Settings, db: Database, ollama: OllamaClient) -> LLM:
+    return RoutingLLM(settings, db, ollama)

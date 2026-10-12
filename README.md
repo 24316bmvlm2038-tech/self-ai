@@ -38,6 +38,31 @@ Next time, open Termux and type `selfai`, or use the home-screen button below. K
 
 **What to expect:** the AI runs on the phone's processor. Replies take a few seconds to start, and longer for the very first message or with **Think** on. A phone with 8 GB+ RAM and a recent chip works best.
 
+### Faster replies: free cloud AI
+
+A phone's processor is slow at running AI. For answers in seconds, let a free cloud service run the model instead:
+
+1. Open **☰ → AI & models**.
+2. Under **Where your AI runs**, pick **Groq** (fastest) or **Google Gemini**, then tap **Get a free key**. Sign up, create a key, and copy it.
+3. Paste the key into the box and tap **Save & use**.
+
+Everything else (web search, files, background tasks) works the same. Your messages are sent to that company instead of staying on the phone. Free plans have daily limits; if you reach one, switch to the other service or back to **On this device**.
+
+### Get a web address
+
+Give Self-AI a real address like `https://ai.yourname.dpdns.org` that opens it from any browser, on any device. It's free, but it takes about 15 minutes to set up once. The address only works while Self-AI is running on your phone.
+
+1. **Get a free domain:** go to [domain.digitalplat.org](https://domain.digitalplat.org), sign up, search for a name, and register it (e.g. `yourname.dpdns.org`).
+2. **Add it to Cloudflare (free):** sign up at [dash.cloudflare.com](https://dash.cloudflare.com), tap **Add a domain**, enter your domain, and choose the **Free** plan. Cloudflare shows two nameservers. Copy them into your domain's nameserver settings on DigitalPlat, then wait until Cloudflare says the domain is **Active** (minutes to a few hours).
+3. **Connect it:** in Termux, run:
+
+   ```
+   cd ~/self-ai && git pull && bash setup-url.sh
+   ```
+
+   Enter the address you want (e.g. `ai.yourname.dpdns.org`) and choose a password. When a Cloudflare page opens, tap your domain and **Authorize**.
+4. Restart Self-AI (`selfai`). Your address now opens Self-AI from anywhere. Visitors must sign in with your password; on the phone itself you're never asked.
+
 ### Use it like a normal app
 
 1. **App icon:** open Self-AI in Chrome, tap **⋮ → Add to Home screen** (or **Install app**) → **Install**. It opens full-screen without the browser bar. If Self-AI isn't running, the app says so and connects by itself once it starts.
@@ -125,7 +150,7 @@ All settings live in `.env` (see [`.env.example`](.env.example)):
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `SELFAI_PROVIDER` | `ollama` (`deepseek` if a key is set) | Free local models, or the DeepSeek API |
+| `SELFAI_PROVIDER` | `ollama` (`deepseek` if a key is set) | `ollama` (this device), `groq`, `gemini`, `openrouter` or `deepseek`. Also switchable in the app. |
 | `SELFAI_MODEL` | `qwen3.5:4b` | Default model (you can also switch in the app) |
 | `SELFAI_OLLAMA_URL` | `http://127.0.0.1:11434` | Where Ollama runs |
 | `SELFAI_CONTEXT_TOKENS` | `8192` | How much text a local model considers at once (more uses more RAM) |
@@ -136,7 +161,9 @@ All settings live in `.env` (see [`.env.example`](.env.example)):
 | `TAVILY_API_KEY` | — | Use [Tavily](https://tavily.com) for web search instead of DuckDuckGo |
 | `SELFAI_DATA_DIR` | `data` | Where chats, tasks, and the workspace are stored |
 | `SELFAI_HOST` / `SELFAI_PORT` | `127.0.0.1` / `8000` | Web server address |
-| `SELFAI_PASSWORD` | — | Require a password (browser login prompt) |
+| `SELFAI_PASSWORD` | — | Password for visitors from other devices or the internet (this device never needs it) |
+| `SELFAI_PUBLIC_URL` | — | Public web address, set by `setup-url.sh` |
+| `GROQ_API_KEY` / `GEMINI_API_KEY` / `OPENROUTER_API_KEY` | — | Keys for free cloud AI (you can also paste them in the app) |
 | `SELFAI_ALLOWED_HOSTS` | `localhost,127.0.0.1,::1` | Host names the UI may be opened under (`*` = any) |
 | `SELFAI_MAX_CONCURRENT_TASKS` | `1` local / `2` DeepSeek | Background tasks running at the same time |
 | `SELFAI_TASK_MAX_STEPS` / `SELFAI_CHAT_MAX_STEPS` | `30` / `15` local | Tool-call budget per task run / chat reply |
@@ -167,6 +194,7 @@ Browser UI ──HTTP/SSE──▶ Self-AI server ──▶ Agent loop ──▶
 - Web tools block `localhost`, private IP ranges, and cloud metadata endpoints, so a malicious page can't steer the AI into your network.
 - The server only listens on `127.0.0.1` by default. It rejects requests from other websites (CSRF) and from unexpected host names (DNS rebinding).
 - Files the AI creates are served in a sandbox, so a saved web page can't use the app's API.
+- With a web address, visitors must sign in with your password (failed attempts lock sign-in for 10 minutes). Without a password, traffic arriving through a tunnel is refused, so Self-AI is never exposed by accident.
 - Limits on steps, concurrent tasks, and download sizes keep runaway jobs in check.
 
 ## Development

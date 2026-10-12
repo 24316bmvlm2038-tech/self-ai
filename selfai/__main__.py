@@ -39,7 +39,9 @@ def main() -> None:
         except httpx.HTTPError:
             log.warning("Ollama is not running at %s - start it with `ollama serve`.", settings.ollama_url)
     else:
-        log.info("Using %s via %s", settings.model, settings.base_url)
+        log.info("Using the %s API (you can switch in the app under AI & models)", settings.provider)
+    if settings.public_url:
+        log.info("Web address: %s", settings.public_url)
     log.info("Workspace: %s", settings.workspace_dir.resolve())
     log.info(
         "Open http://%s:%d in your browser", "localhost" if settings.host == "0.0.0.0" else settings.host, settings.port

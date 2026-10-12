@@ -11,7 +11,7 @@ from .agent import Agent, chat_system_prompt, history_to_api, trim_history
 from .config import Settings
 from .db import Database
 from .errors import describe_error
-from .models import active_model
+from .providers import active_model, config_problem, run_settings
 from .tasks import TaskManager
 from .tools import ToolContext
 
@@ -65,14 +65,15 @@ class ChatService:
     async def _run(self, conv_id: str, model: str | None, think: bool | None, queue: asyncio.Queue) -> None:
         partial: list[str] = []
         try:
-            problem = self.settings.config_problem()
+            problem = config_problem(self.db, self.settings)
             if problem:
                 raise RuntimeError(problem)
-            model = model or active_model(self.db, self.settings)
-            history = trim_history(history_to_api(self.db.list_messages(conv_id)), self.settings.history_max_chars)
-            messages = [{"role": "system", "content": chat_system_prompt(self.settings)}, *history]
-            ctx = ToolContext(self.settings, self.tasks, origin=f"chat:{conv_id}")
-            async for ev in self.agent.run(messages, ctx, self.settings.chat_max_steps, model, think):
+            settings = run_settings(self.db, self.settings)
+            model = model or active_model(self.db, settings)
+            history = trim_history(history_to_api(self.db.list_messages(conv_id)), settings.history_max_chars)
+            messages = [{"role": "system", "content": chat_system_prompt(settings)}, *history]
+            ctx = ToolContext(settings, self.tasks, origin=f"chat:{conv_id}")
+            async for ev in self.agent.run(messages, ctx, settings.chat_max_steps, model, think):
                 if ev["type"] == "message":
                     self.db.add_message(conv_id, ev["message"], ev.get("reasoning"))
                     partial.clear()

@@ -12,6 +12,7 @@ from .config import Settings
 from .db import Database
 from .errors import LLMError, describe_error
 from .ollama import OllamaClient, normalize_model_name
+from .providers import local_model
 
 log = logging.getLogger("selfai.models")
 
@@ -94,14 +95,6 @@ def suggest_model(ram_gb: float | None, android: bool) -> str:
     return "qwen3.5:9b"
 
 
-def active_model(db: Database, settings: Settings) -> str:
-    """The model chosen in the UI, else the configured default."""
-    chosen = db.get_setting("model")
-    if chosen and (settings.is_local or chosen in settings.models):
-        return chosen
-    return settings.model
-
-
 class ModelManager:
     """Lists, downloads and removes local models, tracking download progress for the UI."""
 
@@ -119,7 +112,7 @@ class ModelManager:
         """The active model and installed model names. If the active model isn't installed but
         others are, switch to one of those so the AI keeps working."""
         names = [m["name"] for m in await self.installed()]
-        current = active_model(self.db, self.settings)
+        current = local_model(self.db, self.settings)
         if names and normalize_model_name(current) not in {normalize_model_name(n) for n in names}:
             current = names[0]
             self.db.set_setting("model", current)
@@ -147,7 +140,7 @@ class ModelManager:
             self.client.forget(name)
             # If the active model isn't installed (e.g. the very first download), use this one.
             installed = {normalize_model_name(m["name"]) for m in await self.installed()}
-            if normalize_model_name(active_model(self.db, self.settings)) not in installed:
+            if normalize_model_name(local_model(self.db, self.settings)) not in installed:
                 self.db.set_setting("model", name)
             log.info("Downloaded model %s", name)
         except asyncio.CancelledError:
@@ -167,7 +160,7 @@ class ModelManager:
         except LLMError as exc:
             if exc.status != 404:
                 raise
-        if normalize_model_name(active_model(self.db, self.settings)) == normalize_model_name(name):
+        if normalize_model_name(local_model(self.db, self.settings)) == normalize_model_name(name):
             self.db.delete_setting("model")
 
     async def shutdown(self) -> None:

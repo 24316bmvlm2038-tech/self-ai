@@ -135,6 +135,10 @@ async function api(path, options = {}) {
     ...options,
     headers: { 'Content-Type': 'application/json', 'X-SelfAI': '1', ...(options.headers || {}) },
   });
+  if (res.status === 401) {
+    location.reload(); // signed out: the server shows the sign-in page
+    throw new Error('Please sign in.');
+  }
   if (!res.ok) {
     let detail = `${res.status} ${res.statusText}`;
     try {
@@ -1109,7 +1113,7 @@ function setView(view, { updateHash = true } = {}) {
   clearInterval(state.timers.view);
   clearTimeout(state.timers.models);
   if (view === 'models') {
-    $('#view-title').textContent = 'Models';
+    $('#view-title').textContent = 'AI & models';
     if (updateHash) history.replaceState(null, '', '#models');
     loadModels();
   } else if (view === 'tasks') {
@@ -1188,15 +1192,16 @@ async function loadStatus() {
     if (!options.length) select.append(el('option', { value: '', text: local ? 'No model yet' : '—', disabled: true }));
   }
   select.value = options.includes(s.model) ? s.model : '';
-  $('#models-nav').classList.toggle('hidden', !local);
   updateThinkButton();
 
   const foot = $('#status-line');
   foot.innerHTML = '';
-  const label = s.ready ? `${local ? 'On this device' : 'DeepSeek API'} · ${s.model}` : 'Not ready';
-  foot.append(
-    el('div', {}, el('span', { class: `dot${s.ready ? '' : ' bad'}` }), label),
-    el('div', { text: `Search: ${s.search_provider} · v${s.version}` }));
+  const label = s.ready ? `${s.provider_name} · ${s.model}` : 'Not ready';
+  foot.append(el('div', {}, el('span', { class: `dot${s.ready ? '' : ' bad'}` }), label));
+  if (s.public_url) {
+    foot.append(el('div', {}, 'Web: ', el('a', { href: s.public_url, target: '_blank', rel: 'noopener', text: s.public_url.replace(/^https?:\/\//, '') })));
+  }
+  foot.append(el('div', { text: `Search: ${s.search_provider} · v${s.version}` }));
 
   const banner = $('#setup-banner');
   banner.classList.toggle('hidden', s.ready);
@@ -1207,6 +1212,8 @@ async function loadStatus() {
     banner.append(msg);
     if (s.problem_code === 'no_models' || s.problem_code === 'model_missing') {
       banner.append(' ', el('button', { type: 'button', class: 'btn', onclick: () => setView('models') }, icon('download'), 'Download a free model'));
+    } else if (s.problem_code === 'config' || s.problem_code === 'cloud_error') {
+      banner.append(' ', el('button', { type: 'button', class: 'btn', onclick: () => setView('models') }, icon('chip'), 'Open Models'));
     }
   }
 }
@@ -1284,6 +1291,7 @@ async function loadModels() {
   const finished = state.models && Object.entries(data.pulls).some(([name, p]) => p.done && !state.models.pulls[name]?.done);
   state.models = data;
   if (state.view !== 'models') return;
+  renderProviders(data.providers);
 
   const suggested = data.recommended.find((r) => r.name === data.suggested);
   $('#models-device').textContent = data.ram_gb
@@ -1315,6 +1323,76 @@ async function loadModels() {
   if (finished) loadStatus();
   const busy = Object.values(data.pulls).some((p) => !p.done);
   state.timers.models = setTimeout(loadModels, busy ? 1000 : 5000);
+}
+
+// Re-rendered only when something changed, so a half-typed key isn't wiped by the refresh.
+function renderProviders(providers) {
+  const signature = JSON.stringify(providers);
+  if (state.providersSignature === signature) return;
+  state.providersSignature = signature;
+  const box = $('#providers');
+  box.innerHTML = '';
+  for (const p of providers) box.append(providerCard(p));
+}
+
+function providerCard(p) {
+  const actions = el('div', { class: 'model-actions' });
+  const error = el('div', { class: 'error-box hidden' });
+  const card = el('div', { class: `card model-card${p.active ? ' active' : ''}` },
+    el('div', { class: 'head' },
+      el('span', { class: 'title', text: p.name }),
+      p.id === 'groq' && !p.active ? el('span', { class: 'pill accent', text: 'Fastest free' }) : null,
+      p.active ? el('span', { class: 'pill ok', text: 'In use' }) : null),
+    el('div', { class: 'desc', text: p.description }),
+    el('div', { class: 'pills' },
+      el('span', { class: 'pill', text: p.free ? 'Free' : 'Paid' }),
+      p.private ? el('span', { class: 'pill', text: 'Private' }) : el('span', { class: 'pill', text: 'Fast' })),
+    error,
+    actions);
+
+  const use = async (key) => {
+    error.classList.add('hidden');
+    try {
+      await api('/api/providers/active', { method: 'POST', body: JSON.stringify({ provider: p.id, api_key: key || undefined }) });
+      state.providersSignature = null;
+      await loadStatus();
+      loadModels();
+    } catch (err) {
+      error.textContent = err.message;
+      error.classList.remove('hidden');
+    }
+  };
+
+  const keyForm = () => {
+    const input = el('input', { type: 'password', placeholder: `Paste your ${p.name} key`, autocomplete: 'off', spellcheck: 'false' });
+    const save = el('button', { class: 'primary', type: 'button' }, 'Save & use');
+    save.addEventListener('click', async () => {
+      if (!input.value.trim()) return input.focus();
+      save.disabled = true;
+      save.textContent = 'Checking…';
+      await use(input.value.trim());
+      save.disabled = false;
+      save.textContent = 'Save & use';
+    });
+    return el('div', { class: 'key-form' },
+      el('div', { class: 'key-steps' },
+        el('span', { text: `1. ` }),
+        el('a', { href: p.key_url, target: '_blank', rel: 'noopener', text: p.free ? `Get a free ${p.name} key` : `Get a ${p.name} key` }),
+        el('span', { text: ' (sign up, then create a key and copy it)' })),
+      el('div', { class: 'key-row' }, el('span', { text: '2.' }), input, save));
+  };
+
+  if (p.id === 'ollama' || p.has_key) {
+    if (!p.active) actions.append(el('button', { class: 'primary', type: 'button', onclick: () => use() }, 'Use this'));
+    if (p.has_key && p.id !== 'ollama') {
+      const change = el('button', { class: 'btn', type: 'button', text: 'Change key' });
+      change.addEventListener('click', () => { change.replaceWith(keyForm()); });
+      actions.append(change);
+    }
+  } else {
+    actions.append(keyForm());
+  }
+  return card;
 }
 
 async function pullModel(name) {

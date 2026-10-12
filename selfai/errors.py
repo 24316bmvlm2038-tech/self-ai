@@ -13,15 +13,18 @@ class LLMError(Exception):
         self.status = status
 
 
-def api_error_message(status: int, detail: str) -> str:
-    """Explain an error response from the DeepSeek (OpenAI-compatible) API."""
-    if status == 401:
-        return "DeepSeek rejected the API key. Check DEEPSEEK_API_KEY in your .env file."
+def api_error_message(status: int, detail: str, name: str = "DeepSeek") -> str:
+    """Explain an error response from a cloud AI API (DeepSeek, Groq, Gemini...)."""
+    if status in (401, 403):
+        return f"{name} rejected the API key. Check the key in Models."
     if status == 402:
-        return "Your DeepSeek account has insufficient balance. Top up at platform.deepseek.com, or switch to a free local model."
-    if status == 429:
-        return "The AI service's rate limit was reached. Wait a moment and try again."
-    return f"AI API error {status}: {detail}"
+        return f"Your {name} account has insufficient balance. Top it up, or switch to a free AI in Models."
+    if status in (413, 429):
+        return (
+            f"{name}'s free limit was reached (free plans allow a limited amount per minute and per day). "
+            "Wait a minute, or switch to another AI in Models."
+        )
+    return f"{name} error {status}: {detail}"
 
 
 def describe_error(exc: BaseException) -> str:

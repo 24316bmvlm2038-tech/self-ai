@@ -10,7 +10,7 @@ from . import db as store
 from .agent import Agent, task_system_prompt, task_user_prompt
 from .config import Settings
 from .errors import describe_error
-from .models import active_model
+from .providers import active_model, config_problem, run_settings
 from .tools import ToolContext
 
 log = logging.getLogger("selfai.tasks")
@@ -176,18 +176,19 @@ class TaskManager:
         status, result = store.FAILED, "Run did not finish."
         interrupted = False
         try:
-            problem = self.settings.config_problem()
+            problem = config_problem(self.db, self.settings)
             if problem:
                 raise RuntimeError(problem)
+            settings = run_settings(self.db, self.settings)
             messages = [
-                {"role": "system", "content": task_system_prompt(self.settings, task)},
+                {"role": "system", "content": task_system_prompt(settings, task)},
                 {"role": "user", "content": task_user_prompt(task)},
             ]
-            ctx = ToolContext(self.settings, self, origin=f"task:{task['id']}")
+            ctx = ToolContext(settings, self, origin=f"task:{task['id']}")
             final = ""
-            model = active_model(self.db, self.settings)
-            think = self.settings.task_thinking
-            async for ev in self.agent.run(messages, ctx, self.settings.task_max_steps, model, think):
+            model = active_model(self.db, settings)
+            think = settings.task_thinking
+            async for ev in self.agent.run(messages, ctx, settings.task_max_steps, model, think):
                 kind = ev["type"]
                 if kind == "message" and ev["message"]["role"] == "assistant":
                     msg = ev["message"]

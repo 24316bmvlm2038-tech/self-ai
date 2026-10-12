@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import mimetypes
-import secrets
 import shutil
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import httpx
 from starlette.applications import Starlette
 from starlette.exceptions import HTTPException
 from starlette.requests import Request
@@ -20,13 +19,26 @@ from starlette.staticfiles import StaticFiles
 
 from . import __version__
 from .agent import Agent
+from .auth import AuthMiddleware, login_endpoint
 from .chat import DEFAULT_TITLE, ChatService
 from .config import Settings
 from .db import PENDING, RUNNING, Database
 from .errors import LLMError
-from .llm import LLM, build_llm
-from .models import RECOMMENDED_MODELS, ModelManager, active_model, device_ram_gb, is_android, suggest_model
+from .llm import LLM, RoutingLLM
+from .models import RECOMMENDED_MODELS, ModelManager, device_ram_gb, is_android, suggest_model
 from .ollama import OllamaClient, normalize_model_name
+from .providers import (
+    CLOUD_PROVIDERS,
+    LOCAL,
+    CloudModels,
+    active_model,
+    active_provider,
+    api_key,
+    cloud_provider,
+    config_problem,
+    local_model,
+    pick_model,
+)
 from .tasks import TaskManager
 from .tools import ToolError, build_registry
 from .tools.files import list_entries, relative, resolve_path
@@ -36,53 +48,25 @@ KEEPALIVE_SECONDS = 10.0
 mimetypes.add_type("application/manifest+json", ".webmanifest")
 
 
-class BasicAuthMiddleware:
-    """Optional password protection (any username) using the browser's built-in login prompt."""
-
-    def __init__(self, app, password: str):
-        self.app = app
-        self.password = password.encode()
-
-    async def __call__(self, scope, receive, send):
-        if scope["type"] != "http" or self._authorized(scope):
-            return await self.app(scope, receive, send)
-        await send(
-            {
-                "type": "http.response.start",
-                "status": 401,
-                "headers": [(b"www-authenticate", b'Basic realm="Self-AI"'), (b"content-type", b"text/plain")],
-            }
-        )
-        await send({"type": "http.response.body", "body": b"Authentication required"})
-
-    def _authorized(self, scope) -> bool:
-        for name, value in scope.get("headers", []):
-            if name == b"authorization" and value[:6].lower() == b"basic ":
-                try:
-                    _, _, password = base64.b64decode(value[6:]).partition(b":")
-                except ValueError:
-                    return False
-                return secrets.compare_digest(password, self.password)
-        return False
-
-
 class RequestGuardMiddleware:
     """Protects a local agent from other websites:
-    - Host allowlist: blocks DNS-rebinding (evil.com resolving to 127.0.0.1).
+    - Host allowlist: blocks DNS-rebinding (evil.com resolving to 127.0.0.1). Not needed when a
+      password is set (the rebinding page has no login), so a public web address just works.
     - Writes to /api/ need an `X-SelfAI` header, which cross-site pages can't send
       without a CORS preflight that this server never approves (blocks CSRF)."""
 
     SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
-    def __init__(self, app, allowed_hosts: list[str]):
+    def __init__(self, app, allowed_hosts: list[str], check_host: bool = True):
         self.app = app
         self.allowed_hosts = {h.lower() for h in allowed_hosts}
+        self.check_host = check_host
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
             return await self.app(scope, receive, send)
         headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
-        if "*" not in self.allowed_hosts:
+        if self.check_host and "*" not in self.allowed_hosts:
             host = headers.get("host", "")
             if host.startswith("["):  # [ipv6]:port
                 hostname = host[1:].split("]", 1)[0]
@@ -152,13 +136,17 @@ async def http_error(request: Request, exc: HTTPException) -> JSONResponse:
 
 
 def create_app(
-    settings: Settings | None = None, llm: LLM | None = None, ollama: OllamaClient | None = None
+    settings: Settings | None = None,
+    llm: LLM | None = None,
+    ollama: OllamaClient | None = None,
+    cloud_transport: httpx.AsyncBaseTransport | None = None,
 ) -> Starlette:
     settings = settings or Settings.from_env()
     settings.ensure_dirs()
     db = Database(settings.db_path)
     ollama = ollama or OllamaClient(settings.ollama_url, log_path=settings.data_dir / "ollama.log")
-    agent = Agent(llm or build_llm(settings, ollama), build_registry(), settings)
+    agent = Agent(llm or RoutingLLM(settings, db, ollama, cloud_transport), build_registry(), settings)
+    cloud_models = CloudModels(cloud_transport)
     tasks = TaskManager(db, agent, settings)
     chat = ChatService(db, agent, settings, tasks)
     models = ModelManager(ollama, db, settings)
@@ -184,51 +172,117 @@ def create_app(
         except ToolError as exc:
             raise HTTPException(400, str(exc)) from exc
 
-    def require_local() -> None:
-        if not settings.is_local:
-            raise HTTPException(400, "Model downloads are only available with the local (Ollama) provider.")
-
     # ------------------------------------------------------------------ status & models
 
+    def provider_name(pid: str) -> str:
+        return "On this device" if pid == LOCAL else cloud_provider(pid, settings).name
+
     async def status(request: Request) -> JSONResponse:
-        problem, code = settings.config_problem(), "config"
+        pid = active_provider(db, settings)
+        problem, code = config_problem(db, settings), "config"
         model = active_model(db, settings)
-        names = settings.models
+        names: list[str] = []
         capabilities = None
-        if settings.is_local and not problem:
+        if pid == LOCAL:
             await ollama.ensure_running()
             try:
                 model, names = await models.resolve_active()
             except LLMError as exc:
-                problem, code, names = str(exc), "ollama_down", []
+                problem, code = str(exc), "ollama_down"
             else:
                 if not names:
                     problem, code = "No AI model is downloaded yet. Open Models to download a free one.", "no_models"
                 else:
                     caps = await ollama.capabilities(model)
                     capabilities = sorted(caps) if caps is not None else None
+        elif not problem:
+            provider = cloud_provider(pid, settings)
+            if pid == "deepseek":
+                names = settings.models
+            else:
+                try:
+                    names = await cloud_models.list(provider, api_key(db, settings, pid))
+                except LLMError as exc:
+                    problem, code = str(exc), "cloud_error"
+                if names and model not in names:
+                    model = pick_model(names, provider)  # e.g. the default model was retired
+                    db.set_setting(f"model:{pid}", model)
         return JSONResponse(
             {
                 "version": __version__,
-                "provider": settings.provider,
+                "provider": pid,
+                "provider_name": provider_name(pid),
                 "model": model,
-                "models": names,
+                "models": names or ([model] if model and pid != LOCAL else []),
                 "capabilities": capabilities,
                 "ready": problem is None,
                 "problem": problem,
                 "problem_code": code if problem else None,
+                "public_url": settings.public_url or None,
                 "search_provider": "tavily" if settings.tavily_api_key else "duckduckgo",
                 "workspace": str(workspace.resolve()),
                 "tasks": {"running": len(db.list_tasks(RUNNING)), "pending": len(db.list_tasks(PENDING))},
             }
         )
 
+    def providers_list() -> list[dict]:
+        pid = active_provider(db, settings)
+        items = [
+            {
+                "id": LOCAL,
+                "name": "On this device",
+                "free": True,
+                "private": True,
+                "description": "Free and private: your chats never leave the device, and it works offline. "
+                "Slower on phones.",
+                "has_key": True,
+                "active": pid == LOCAL,
+            }
+        ]
+        for provider_id in CLOUD_PROVIDERS:
+            provider = cloud_provider(provider_id, settings)
+            items.append(
+                {
+                    "id": provider.id,
+                    "name": provider.name,
+                    "free": provider.free,
+                    "private": False,
+                    "description": provider.description,
+                    "key_url": provider.key_url,
+                    "has_key": bool(api_key(db, settings, provider.id)),
+                    "active": pid == provider.id,
+                }
+            )
+        return items
+
+    async def set_provider(request: Request) -> JSONResponse:
+        data = await json_body(request)
+        pid = text_field(data, "provider", required=True).strip()
+        if pid != LOCAL and pid not in CLOUD_PROVIDERS:
+            raise HTTPException(400, f"Unknown AI provider '{pid}'.")
+        key = text_field(data, "api_key", max_len=500).strip()
+        if pid != LOCAL:
+            provider = cloud_provider(pid, settings)
+            if key:
+                try:
+                    names = await cloud_models.list(provider, key, fresh=True)
+                except LLMError as exc:
+                    raise HTTPException(400, f"That key didn't work. {exc}") from exc
+                db.set_setting(f"key:{pid}", key)
+                if names and not db.get_setting(f"model:{pid}"):
+                    db.set_setting(f"model:{pid}", pick_model(names, provider))
+            elif not api_key(db, settings, pid):
+                raise HTTPException(400, f"Paste your {provider.name} key first.")
+        db.set_setting("provider", pid)
+        return JSONResponse({"active": pid, "providers": providers_list()})
+
     async def list_models(request: Request) -> JSONResponse:
         ram = device_ram_gb()
         android = is_android()
         result: dict = {
-            "provider": settings.provider,
-            "active": active_model(db, settings),
+            "provider": active_provider(db, settings),
+            "providers": providers_list(),
+            "active": local_model(db, settings),
             "installed": [],
             "recommended": [],
             "pulls": models.pulls,
@@ -237,9 +291,6 @@ def create_app(
             "suggested": suggest_model(ram, android),
             "error": None,
         }
-        if not settings.is_local:
-            result["installed"] = [{"name": m} for m in settings.models]
-            return JSONResponse(result)
         try:
             installed = await models.installed()
         except LLMError as exc:
@@ -256,7 +307,6 @@ def create_app(
         return JSONResponse(result)
 
     async def pull_model(request: Request) -> JSONResponse:
-        require_local()
         name = text_field(await json_body(request), "name", required=True)
         try:
             models.start_pull(name)
@@ -265,7 +315,6 @@ def create_app(
         return JSONResponse({"ok": True}, status_code=202)
 
     async def delete_model(request: Request) -> JSONResponse:
-        require_local()
         name = request.query_params.get("name", "")
         try:
             await models.delete(name)
@@ -275,9 +324,10 @@ def create_app(
 
     async def set_active_model(request: Request) -> JSONResponse:
         name = text_field(await json_body(request), "name", required=True).strip()
-        if not settings.is_local and name not in settings.models:
+        pid = active_provider(db, settings)
+        if pid == "deepseek" and name not in settings.models:
             raise HTTPException(400, f"Unknown model '{name}'. Available: {', '.join(settings.models)}")
-        db.set_setting("model", name)
+        db.set_setting("model" if pid == LOCAL else f"model:{pid}", name)
         return JSONResponse({"active": name})
 
     # ------------------------------------------------------------------ conversations
@@ -320,7 +370,7 @@ def create_app(
         think = data.get("think")
         if think is not None and not isinstance(think, bool):
             raise HTTPException(400, "'think' must be true or false.")
-        if model and not settings.is_local and model not in settings.models:
+        if model and active_provider(db, settings) == "deepseek" and model not in settings.models:
             raise HTTPException(400, f"Unknown model '{model}'. Available: {', '.join(settings.models)}")
         if chat.is_running(conv_id):
             raise HTTPException(409, "This conversation is already generating a reply.")
@@ -479,7 +529,7 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: Starlette):
-        starting = asyncio.create_task(ollama.ensure_running()) if settings.is_local else None
+        starting = asyncio.create_task(ollama.ensure_running()) if active_provider(db, settings) == LOCAL else None
         await tasks.start()
         try:
             yield
@@ -494,6 +544,8 @@ def create_app(
     routes = [
         Route("/", index),
         Route("/sw.js", service_worker),
+        Route("/login", login_endpoint(settings.password), methods=["GET", "POST"]),
+        Route("/api/providers/active", set_provider, methods=["POST"]),
         Route("/api/status", status),
         Route("/api/models", list_models),
         Route("/api/models", delete_model, methods=["DELETE"]),
@@ -518,9 +570,8 @@ def create_app(
         Mount("/static", StaticFiles(directory=STATIC_DIR), name="static"),
     ]
     app = Starlette(routes=routes, lifespan=lifespan, exception_handlers={HTTPException: http_error})
-    app.add_middleware(RequestGuardMiddleware, allowed_hosts=settings.allowed_hosts)
-    if settings.password:
-        app.add_middleware(BasicAuthMiddleware, password=settings.password)
+    app.add_middleware(RequestGuardMiddleware, allowed_hosts=settings.allowed_hosts, check_host=not settings.password)
+    app.add_middleware(AuthMiddleware, password=settings.password)
     app.state.settings = settings
     app.state.db = db
     app.state.tasks = tasks
