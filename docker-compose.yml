@@ -1,17 +1,31 @@
-# Runs Self-AI as an always-on service: it restarts automatically, and background
-# tasks keep running whether or not the browser is open.
+# Runs Self-AI as an always-on service together with Ollama (free local models).
+# It restarts automatically, and background tasks keep running with the browser closed.
+#
+#   docker compose up -d --build      then open http://localhost:8000 and download a model in "Models"
 services:
+  ollama:
+    image: ollama/ollama
+    volumes:
+      - ollama-models:/root/.ollama
+    restart: unless-stopped
+
   selfai:
     build: .
-    env_file: .env
+    env_file:
+      - path: .env
+        required: false
     environment:
       SELFAI_HOST: 0.0.0.0
       SELFAI_DATA_DIR: /data
+      SELFAI_OLLAMA_URL: http://ollama:11434
     ports:
       - "127.0.0.1:8000:8000"
     volumes:
       - selfai-data:/data
+    depends_on:
+      - ollama
     restart: unless-stopped
 
 volumes:
   selfai-data:
+  ollama-models:

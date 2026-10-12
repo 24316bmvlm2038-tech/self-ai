@@ -21,13 +21,19 @@ STEP_LIMIT_NOTICE = (
 INTERRUPTED_RESULT = "(no result: the run was interrupted before this tool finished)"
 
 
-def _now_str() -> str:
-    return datetime.now().astimezone().strftime("%A, %Y-%m-%d %H:%M %Z")
+def _today() -> str:
+    # Date only: a system prompt that changes every minute would defeat prompt caching,
+    # which makes every message slow on a phone (and costs more on the DeepSeek API).
+    return datetime.now().astimezone().strftime("%A, %Y-%m-%d")
+
+
+def _now() -> str:
+    return datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z")
 
 
 def chat_system_prompt(settings: Settings) -> str:
-    return f"""You are Self-AI, a capable, autonomous AI assistant powered by DeepSeek.
-Current date and time: {_now_str()}.
+    return f"""You are Self-AI, a capable, autonomous AI assistant.
+Today is {_today()}.
 
 You have tools, and you should use them proactively instead of guessing:
 - Internet: `web_search` to find information and `fetch_url` to read pages, docs, PDFs or APIs. Use them for anything recent, factual details you are not sure about, or when the user mentions a URL. Cite the URLs you used.
@@ -46,8 +52,8 @@ def _slug(text: str) -> str:
 
 
 def task_system_prompt(settings: Settings, task: dict) -> str:
-    return f"""You are Self-AI, an autonomous AI agent powered by DeepSeek. You are running a BACKGROUND TASK with no human in the loop.
-Current date and time: {_now_str()}.
+    return f"""You are Self-AI, an autonomous AI agent. You are running a BACKGROUND TASK with no human in the loop.
+Today is {_today()}.
 Task id: {task["id"]}. Title: {task["title"]}.
 
 How to work:
@@ -61,7 +67,7 @@ How to work:
 
 
 def task_user_prompt(task: dict) -> str:
-    parts = [f"Goal:\n{task['goal']}"]
+    parts = [f"Goal:\n{task['goal']}", f"Current time: {_now()}."]
     if task.get("interval_minutes"):
         parts.append(
             f"This is a recurring task that runs every {task['interval_minutes']:g} minutes; "
@@ -137,7 +143,12 @@ class Agent:
         self.settings = settings
 
     async def run(
-        self, messages: list[dict], ctx: ToolContext, max_steps: int, model: str | None = None
+        self,
+        messages: list[dict],
+        ctx: ToolContext,
+        max_steps: int,
+        model: str | None = None,
+        think: bool | None = None,
     ) -> AsyncIterator[dict]:
         """Run until the model answers without tool calls. `messages` is extended in place.
 
@@ -148,6 +159,7 @@ class Agent:
           done                     final answer ({"content"})
         """
         tools = self.registry.schemas()
+        notices: set[str] = set()
         for step in range(max_steps + 1):
             final_step = step == max_steps
             if final_step:
@@ -157,7 +169,7 @@ class Agent:
             content: list[str] = []
             reasoning: list[str] = []
             calls: dict[int, dict] = {}
-            async for ev in self.llm.stream(messages, None if final_step else tools, model):
+            async for ev in self.llm.stream(messages, None if final_step else tools, model, think):
                 kind = ev["type"]
                 if kind == "content":
                     content.append(ev["text"])
@@ -165,6 +177,10 @@ class Agent:
                 elif kind == "reasoning":
                     reasoning.append(ev["text"])
                     yield {"type": "reasoning", "text": ev["text"]}
+                elif kind == "notice":
+                    if ev["text"] not in notices:  # say it once per run, not every step
+                        notices.add(ev["text"])
+                        yield {"type": "notice", "text": ev["text"]}
                 elif kind == "tool_call":
                     slot = calls.setdefault(ev["index"], {"id": None, "name": "", "arguments": ""})
                     if ev.get("id") and not slot["id"]:

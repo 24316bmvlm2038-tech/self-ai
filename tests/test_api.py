@@ -3,21 +3,26 @@ import json
 import time
 
 import pytest
-from fastapi.testclient import TestClient
+from starlette.testclient import TestClient
 
 from selfai.server import create_app
 
-from .conftest import FakeLLM, ToolCall
+from .conftest import FakeLLM, FakeOllama, ToolCall
 
 H = {"X-SelfAI": "1"}
 
 
 @pytest.fixture
-def make_client(settings):
+def fake_ollama():
+    return FakeOllama()
+
+
+@pytest.fixture
+def make_client(settings, fake_ollama):
     clients = []
 
     def factory(llm=None):
-        client = TestClient(create_app(settings, llm or FakeLLM(["Hello!"])))
+        client = TestClient(create_app(settings, llm or FakeLLM(["Hello!"]), fake_ollama.client()))
         client.__enter__()
         clients.append(client)
         return client
@@ -55,10 +60,63 @@ def test_index_and_status(make_client):
     page = client.get("/")
     assert page.status_code == 200 and "Self-AI" in page.text
     assert client.get("/static/app.js").status_code == 200
+    manifest = client.get("/static/manifest.webmanifest")
+    assert manifest.headers["content-type"].startswith("application/manifest+json")
+    assert manifest.json()["display"] == "standalone"
     status = client.get("/api/status").json()
-    assert status["api_key_configured"] is True
-    assert status["model"] == "deepseek-chat"
+    assert status["ready"] is True and status["problem"] is None
+    assert status["provider"] == "ollama"
+    assert status["model"] == "qwen3.5:4b"
+    assert status["models"] == ["qwen3.5:4b"]
+    assert status["capabilities"] == ["completion", "thinking", "tools"]
     assert status["search_provider"] == "duckduckgo"
+
+
+def test_status_explains_what_is_missing(make_client, fake_ollama, settings):
+    client = make_client()
+    fake_ollama.models.clear()
+    status = client.get("/api/status").json()
+    assert status["ready"] is False and status["problem_code"] == "no_models"
+    fake_ollama.up = False
+    status = client.get("/api/status").json()
+    assert status["problem_code"] == "ollama_down" and "ollama serve" in status["problem"]
+
+
+def test_status_with_deepseek(make_client, settings):
+    settings.provider = "deepseek"
+    settings.model = "deepseek-chat"
+    client = make_client()
+    status = client.get("/api/status").json()
+    assert status["problem_code"] == "config" and "DEEPSEEK_API_KEY" in status["problem"]
+    settings.api_key = "sk-test"
+    status = client.get("/api/status").json()
+    assert status["ready"] and status["models"] == ["deepseek-chat", "deepseek-reasoner"]
+    assert client.post("/api/models/pull", json={"name": "x"}, headers=H).status_code == 400
+    assert client.post("/api/models/active", json={"name": "gpt-9"}, headers=H).status_code == 400
+    assert client.post("/api/models/active", json={"name": "deepseek-reasoner"}, headers=H).status_code == 200
+    assert client.get("/api/status").json()["model"] == "deepseek-reasoner"
+
+
+def test_models_panel_download_and_switch(make_client, fake_ollama):
+    client = make_client()
+    data = client.get("/api/models").json()
+    assert data["active"] == "qwen3.5:4b"
+    assert [m["name"] for m in data["installed"]] == ["qwen3.5:4b"]
+    assert data["installed"][0]["capabilities"] == ["completion", "thinking", "tools"]
+    rec = {m["name"]: m for m in data["recommended"]}
+    assert rec["qwen3.5:4b"]["installed"] is True and rec["qwen3.5:2b"]["installed"] is False
+    assert data["suggested"] in rec
+
+    assert client.post("/api/models/pull", json={"name": "qwen3.5:2b"}, headers=H).status_code == 202
+    done = wait_until(lambda: (p := client.get("/api/models").json()["pulls"].get("qwen3.5:2b")) and p["done"] and p)
+    assert done["status"] == "success"
+    assert "qwen3.5:2b" in [m["name"] for m in client.get("/api/models").json()["installed"]]
+
+    assert client.post("/api/models/active", json={"name": "qwen3.5:2b"}, headers=H).json() == {"active": "qwen3.5:2b"}
+    assert client.get("/api/status").json()["model"] == "qwen3.5:2b"
+    assert client.delete("/api/models?name=qwen3.5:2b", headers=H).status_code == 200
+    assert client.get("/api/status").json()["model"] == "qwen3.5:4b"
+    assert client.post("/api/models/pull", json={"name": "../evil"}, headers=H).status_code == 400
 
 
 def test_chat_round_trip_with_tools(make_client, settings):
@@ -67,11 +125,11 @@ def test_chat_round_trip_with_tools(make_client, settings):
     conv = client.post("/api/conversations", json={}, headers=H).json()
     assert conv["title"] == "New chat"
 
-    events = stream_events(client, conv["id"], "Please create hello.txt", model="deepseek-reasoner")
+    events = stream_events(client, conv["id"], "Please create hello.txt", model="qwen3.5:2b", think=True)
     types = [e["type"] for e in events]
     assert types[0] == "tool_call" and "tool_result" in types and types[-1] == "done"
     assert "".join(e["text"] for e in events if e["type"] == "token") == "Created **hello.txt**."
-    assert llm.calls[0]["model"] == "deepseek-reasoner"
+    assert llm.calls[0]["model"] == "qwen3.5:2b" and llm.calls[0]["think"] is True
     assert (settings.workspace_dir / "hello.txt").read_text() == "hi there"
 
     data = client.get(f"/api/conversations/{conv['id']}").json()
@@ -101,13 +159,48 @@ def test_chat_round_trip_with_tools(make_client, settings):
 def test_chat_errors(make_client, settings):
     client = make_client()
     conv = client.post("/api/conversations", json={}, headers=H).json()
-    r = client.post(f"/api/conversations/{conv['id']}/messages", json={"content": "x", "model": "gpt-9"}, headers=H)
-    assert r.status_code == 400
+    url = f"/api/conversations/{conv['id']}/messages"
+    assert client.post(url, json={"content": ""}, headers=H).status_code == 400
+    assert client.post(url, json={"content": "x", "think": "yes"}, headers=H).status_code == 400
+    assert client.post(url, content=b"not json", headers=H).status_code == 400
     assert client.post("/api/conversations/nope/messages", json={"content": "x"}, headers=H).status_code == 404
 
+    settings.provider = "deepseek"
     settings.api_key = ""
+    r = client.post(url, json={"content": "x", "model": "gpt-9"}, headers=H)
+    assert r.status_code == 400 and "Unknown model" in r.json()["detail"]
     events = stream_events(client, conv["id"], "hello")
     assert events[-1]["type"] == "error" and "DEEPSEEK_API_KEY" in events[-1]["error"]
+
+
+def test_chat_with_local_model_end_to_end(settings, fake_ollama):
+    """Real OllamaLLM against the fake Ollama server: tool call, then answer."""
+    fake_ollama.chat_script += [
+        [
+            {
+                "message": {
+                    "content": "",
+                    "tool_calls": [
+                        {"function": {"name": "write_file", "arguments": {"path": "n.md", "content": "hi"}}}
+                    ],
+                },
+                "done": False,
+            },
+            {"message": {"content": ""}, "done": True, "done_reason": "stop"},
+        ],
+        [{"message": {"content": "Saved n.md"}, "done": False}, {"message": {"content": ""}, "done": True}],
+    ]
+    with TestClient(create_app(settings, None, fake_ollama.client())) as client:
+        conv = client.post("/api/conversations", json={}, headers=H).json()
+        events = stream_events(client, conv["id"], "save a note", think=False)
+    assert [e["type"] for e in events] == ["tool_call", "tool_result", "token", "done"]
+    assert (settings.workspace_dir / "n.md").read_text() == "hi"
+    second = fake_ollama.chat_requests[1]
+    assert second["think"] is False
+    assert second["messages"][-1] == {"role": "tool", "content": events[1]["content"], "tool_name": "write_file"}
+    assert second["messages"][-2]["tool_calls"] == [
+        {"function": {"name": "write_file", "arguments": {"path": "n.md", "content": "hi"}}}
+    ]
 
 
 def test_stop_generation_keeps_partial_answer(make_client):
@@ -115,7 +208,7 @@ def test_stop_generation_keeps_partial_answer(make_client):
     import threading
 
     class SlowLLM:
-        async def stream(self, messages, tools=None, model=None):
+        async def stream(self, messages, tools=None, model=None, think=None):
             yield {"type": "content", "text": "Partial answer"}
             await asyncio.sleep(30)
 

@@ -5,6 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Self-AI</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%234d6bfe'/%3E%3Cpath d='M9 20c3 3 11 3 14-2M11 12h.01M21 12h.01' stroke='white' stroke-width='3' stroke-linecap='round' fill='none'/%3E%3C/svg%3E">
+  <link rel="manifest" href="/static/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#212121" media="(prefers-color-scheme: dark)">
+  <meta name="mobile-web-app-capable" content="yes">
   <link rel="stylesheet" href="/static/vendor/hljs-light.min.css" media="(prefers-color-scheme: light)">
   <link rel="stylesheet" href="/static/vendor/hljs-dark.min.css" media="(prefers-color-scheme: dark)">
   <link rel="stylesheet" href="/static/style.css">
@@ -21,6 +26,7 @@
     <nav class="views">
       <button class="nav-btn" data-view="tasks"><span data-icon="tasks"></span>Background tasks<span class="badge hidden" id="tasks-badge"></span></button>
       <button class="nav-btn" data-view="files"><span data-icon="folder"></span>Files</button>
+      <button class="nav-btn hidden" data-view="models" id="models-nav"><span data-icon="chip"></span>Models</button>
     </nav>
     <div class="conversations" id="conversations"></div>
     <div class="sidebar-foot" id="status-line"></div>
@@ -39,11 +45,12 @@
     <section class="view" id="view-chat">
       <div class="messages" id="messages"></div>
       <form class="composer" id="composer">
-        <div class="banner hidden" id="key-banner"></div>
+        <div class="banner hidden" id="setup-banner"></div>
         <div class="attachments" id="attachments"></div>
         <div class="composer-box">
           <button type="button" class="icon-btn" id="attach-btn" title="Attach files" data-icon="clip"></button>
           <input type="file" id="attach-input" multiple hidden>
+          <button type="button" class="think-btn hidden" id="think-btn" aria-pressed="false" title="Think step by step before answering: smarter, but slower"><span data-icon="bulb"></span><span>Think</span></button>
           <textarea id="input" rows="1" placeholder="Message Self-AI" autocomplete="off"></textarea>
           <button type="submit" class="send-btn" id="send-btn" title="Send" disabled data-icon="send"></button>
         </div>
@@ -68,6 +75,29 @@
         <div class="task-list" id="task-list"></div>
       </div>
       <div class="drawer hidden" id="task-drawer"></div>
+    </section>
+
+    <!-- Models -->
+    <section class="view hidden" id="view-models">
+      <div class="panel">
+        <div class="card models-intro">
+          <h2>Free AI models</h2>
+          <p class="muted">These models run entirely on this device. They're free and private, and they work offline (only web browsing needs internet). Bigger models are smarter but slower and need more memory.</p>
+          <div id="models-device" class="muted"></div>
+        </div>
+        <div id="models-error"></div>
+        <div class="section-title">Recommended</div>
+        <div id="models-recommended" class="model-list"></div>
+        <div id="models-other-wrap" class="hidden">
+          <div class="section-title">Other downloaded models</div>
+          <div id="models-other" class="model-list"></div>
+        </div>
+        <div class="section-title">Add another model</div>
+        <form class="card custom-model" id="custom-model-form">
+          <input id="custom-model" placeholder="Name from ollama.com/library, e.g. llama3.2:3b" autocomplete="off" autocapitalize="off" spellcheck="false">
+          <button type="submit" class="primary">Download</button>
+        </form>
+      </div>
     </section>
 
     <!-- Files -->

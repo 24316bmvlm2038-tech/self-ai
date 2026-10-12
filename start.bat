@@ -2,6 +2,7 @@
 rem One-click launcher for Windows: sets up a virtual environment, installs dependencies and starts Self-AI.
 setlocal
 set "SELFAI_KEY_INPUT="
+set "SELFAI_FIRST_RUN="
 cd /d "%~dp0"
 
 if not exist .venv (
@@ -20,13 +21,21 @@ python -m pip install --quiet -r requirements.txt
 
 if not exist .env (
   copy .env.example .env >nul
+  set "SELFAI_FIRST_RUN=1"
   echo.
-  echo Get a DeepSeek API key at https://platform.deepseek.com/api_keys
-  set /p "SELFAI_KEY_INPUT=Paste your DeepSeek API key (or press Enter to add it to .env later): "
+  echo Self-AI can run a free AI model on this computer, or use the DeepSeek API - paid, faster.
+  set /p "SELFAI_KEY_INPUT=Paste a DeepSeek API key, or just press Enter to use a free local model: "
 )
-if defined SELFAI_KEY_INPUT (
+rem Variables set inside the block above are only visible from here on.
+if defined SELFAI_FIRST_RUN (
   >>.env echo.
-  >>.env echo DEEPSEEK_API_KEY=%SELFAI_KEY_INPUT%
+  if defined SELFAI_KEY_INPUT (
+    >>.env echo SELFAI_PROVIDER=deepseek
+    >>.env echo DEEPSEEK_API_KEY=%SELFAI_KEY_INPUT%
+  ) else (
+    >>.env echo SELFAI_PROVIDER=ollama
+    where ollama >nul 2>nul || echo Install Ollama from https://ollama.com/download to run free local models.
+  )
 )
 
 python -m selfai %*

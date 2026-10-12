@@ -11,6 +11,7 @@ from .agent import Agent, chat_system_prompt, history_to_api, trim_history
 from .config import Settings
 from .db import Database
 from .errors import describe_error
+from .models import active_model
 from .tasks import TaskManager
 from .tools import ToolContext
 
@@ -36,7 +37,7 @@ class ChatService:
     def is_running(self, conv_id: str) -> bool:
         return conv_id in self.runs
 
-    def start(self, conv_id: str, user_text: str, model: str | None = None) -> asyncio.Queue:
+    def start(self, conv_id: str, user_text: str, model: str | None = None, think: bool | None = None) -> asyncio.Queue:
         if conv_id in self.runs:
             raise RuntimeError("This conversation is already generating a reply.")
         conv = self.db.get_conversation(conv_id)
@@ -45,7 +46,7 @@ class ChatService:
             self.db.rename_conversation(conv_id, first_line or DEFAULT_TITLE)
         self.db.add_message(conv_id, {"role": "user", "content": user_text})
         queue: asyncio.Queue = asyncio.Queue()
-        task = asyncio.create_task(self._run(conv_id, model, queue), name=f"selfai-chat-{conv_id}")
+        task = asyncio.create_task(self._run(conv_id, model, think, queue), name=f"selfai-chat-{conv_id}")
         self.runs[conv_id] = ChatRun(task, queue)
         return queue
 
@@ -61,18 +62,17 @@ class ChatService:
         for conv_id in list(self.runs):
             await self.stop(conv_id)
 
-    async def _run(self, conv_id: str, model: str | None, queue: asyncio.Queue) -> None:
+    async def _run(self, conv_id: str, model: str | None, think: bool | None, queue: asyncio.Queue) -> None:
         partial: list[str] = []
         try:
-            if not self.settings.api_key_configured:
-                raise RuntimeError(
-                    "DEEPSEEK_API_KEY is not set. Add it to the .env file (get a key at "
-                    "https://platform.deepseek.com/api_keys) and restart Self-AI."
-                )
+            problem = self.settings.config_problem()
+            if problem:
+                raise RuntimeError(problem)
+            model = model or active_model(self.db, self.settings)
             history = trim_history(history_to_api(self.db.list_messages(conv_id)), self.settings.history_max_chars)
             messages = [{"role": "system", "content": chat_system_prompt(self.settings)}, *history]
             ctx = ToolContext(self.settings, self.tasks, origin=f"chat:{conv_id}")
-            async for ev in self.agent.run(messages, ctx, self.settings.chat_max_steps, model):
+            async for ev in self.agent.run(messages, ctx, self.settings.chat_max_steps, model, think):
                 if ev["type"] == "message":
                     self.db.add_message(conv_id, ev["message"], ev.get("reasoning"))
                     partial.clear()

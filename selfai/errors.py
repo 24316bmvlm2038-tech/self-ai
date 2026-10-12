@@ -1,23 +1,34 @@
-"""Turn API/network exceptions into messages a user can act on."""
+"""Errors from the model backends, and turning any exception into a message a user can act on."""
 
 from __future__ import annotations
 
-import openai
+import httpx
+
+
+class LLMError(Exception):
+    """A model backend refused or failed a request. The message is meant for the user."""
+
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status
+
+
+def api_error_message(status: int, detail: str) -> str:
+    """Explain an error response from the DeepSeek (OpenAI-compatible) API."""
+    if status == 401:
+        return "DeepSeek rejected the API key. Check DEEPSEEK_API_KEY in your .env file."
+    if status == 402:
+        return "Your DeepSeek account has insufficient balance. Top up at platform.deepseek.com, or switch to a free local model."
+    if status == 429:
+        return "The AI service's rate limit was reached. Wait a moment and try again."
+    return f"AI API error {status}: {detail}"
 
 
 def describe_error(exc: BaseException) -> str:
-    if isinstance(exc, openai.AuthenticationError):
-        return "DeepSeek rejected the API key. Check DEEPSEEK_API_KEY in your .env file."
-    if isinstance(exc, openai.PermissionDeniedError):
-        return f"DeepSeek denied the request: {exc.message}"
-    if isinstance(exc, openai.RateLimitError):
-        return "DeepSeek rate limit reached. Wait a moment and try again."
-    if isinstance(exc, openai.APIStatusError):
-        if exc.status_code == 402:
-            return "Your DeepSeek account has insufficient balance. Top up at platform.deepseek.com."
-        return f"DeepSeek API error {exc.status_code}: {exc.message}"
-    if isinstance(exc, openai.APITimeoutError):
-        return "The request to DeepSeek timed out."
-    if isinstance(exc, openai.APIConnectionError):
-        return "Could not connect to the DeepSeek API. Check your internet connection and DEEPSEEK_BASE_URL."
+    if isinstance(exc, LLMError):
+        return str(exc)
+    if isinstance(exc, httpx.TimeoutException):
+        return "The AI model took too long to respond."
+    if isinstance(exc, httpx.HTTPError):
+        return f"Could not reach the AI model: {type(exc).__name__}: {exc}"
     return f"{type(exc).__name__}: {exc}"

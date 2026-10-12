@@ -5,9 +5,11 @@ import json
 from pathlib import Path
 from typing import Any, Callable
 
+import httpx
 import pytest
 
 from selfai.config import Settings
+from selfai.ollama import OllamaClient
 
 
 class ToolCall:
@@ -17,7 +19,7 @@ class ToolCall:
 
 
 class FakeLLM:
-    """Scripted stand-in for DeepSeek.
+    """Scripted stand-in for the model backend.
 
     Each response is a str (final answer), a list of ToolCall (one step of tool use), or a
     callable(messages, tools) returning one of those. With `responder`, every call is
@@ -30,8 +32,8 @@ class FakeLLM:
         self.reasoning = reasoning
         self.calls: list[dict] = []
 
-    async def stream(self, messages, tools=None, model=None):
-        self.calls.append({"messages": [dict(m) for m in messages], "tools": tools, "model": model})
+    async def stream(self, messages, tools=None, model=None, think=None):
+        self.calls.append({"messages": [dict(m) for m in messages], "tools": tools, "model": model, "think": think})
         if self.responder is not None:
             response = self.responder(messages, tools)
         else:
@@ -65,10 +67,76 @@ class FakeLLM:
         yield {"type": "finish", "reason": "tool_calls"}
 
 
+class FakeOllama:
+    """In-memory stand-in for an Ollama server, served through httpx.MockTransport."""
+
+    def __init__(self, models=("qwen3.5:4b",), capabilities=("completion", "tools", "thinking")):
+        self.models = {name: list(capabilities) for name in models}
+        self.chat_script: list[list[dict]] = []
+        self.chat_requests: list[dict] = []
+        self.pull_gate: asyncio.Event | None = None
+        self.up = True
+
+    def client(self) -> OllamaClient:
+        return OllamaClient("http://ollama.test", transport=httpx.MockTransport(self.handle))
+
+    @staticmethod
+    def ndjson(chunks: list[dict]) -> httpx.Response:
+        return httpx.Response(200, content="".join(json.dumps(c) + "\n" for c in chunks).encode())
+
+    async def handle(self, request: httpx.Request) -> httpx.Response:
+        if not self.up:
+            raise httpx.ConnectError("connection refused", request=request)
+        path = request.url.path
+        body = json.loads(request.content) if request.content else {}
+        if path == "/api/tags":
+            return httpx.Response(
+                200,
+                json={
+                    "models": [
+                        {"name": n, "model": n, "size": 3_400_000_000, "details": {"parameter_size": "4B"}}
+                        for n in self.models
+                    ]
+                },
+            )
+        name = body.get("model")
+        if path == "/api/show":
+            if name not in self.models:
+                return httpx.Response(404, json={"error": f"model '{name}' not found"})
+            return httpx.Response(200, json={"capabilities": self.models[name]})
+        if path == "/api/chat":
+            self.chat_requests.append(body)
+            if name not in self.models:
+                return httpx.Response(404, json={"error": f"model '{name}' not found"})
+            return self.ndjson(self.chat_script.pop(0))
+        if path == "/api/pull":
+            if self.pull_gate is not None:
+                await self.pull_gate.wait()
+            if name.startswith("bad"):
+                return self.ndjson(
+                    [{"status": "pulling manifest"}, {"error": "pull model manifest: file does not exist"}]
+                )
+            self.models[name] = ["completion", "tools"]
+            return self.ndjson(
+                [
+                    {"status": "pulling manifest"},
+                    {"status": "pulling abc", "digest": "abc", "total": 100, "completed": 40},
+                    {"status": "pulling abc", "digest": "abc", "total": 100, "completed": 100},
+                    {"status": "success"},
+                ]
+            )
+        if path == "/api/delete":
+            if self.models.pop(name, None) is None:
+                return httpx.Response(404, json={"error": "model not found"})
+            return httpx.Response(200)
+        return httpx.Response(404, json={"error": "not found"})
+
+
 @pytest.fixture
 def settings(tmp_path: Path) -> Settings:
     s = Settings(
-        api_key="test-key",
+        provider="ollama",
+        model="qwen3.5:4b",
         data_dir=tmp_path / "data",
         allowed_hosts=["testserver", "localhost", "127.0.0.1"],
         scheduler_poll_seconds=0.05,

@@ -53,6 +53,9 @@ const ICONS = {
   code: SVG('<path d="m16 18 6-6-6-6M8 6l-6 6 6 6"/>'),
   sparkle: SVG('<path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M6 18l2.5-2.5M15.5 8.5 18 6"/>'),
   back: SVG('<path d="M15 18l-6-6 6-6"/>'),
+  chip: SVG('<rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/>'),
+  bulb: SVG('<path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2Z"/>'),
+  check: SVG('<path d="M20 6 9 17l-5-5"/>'),
 };
 
 function icon(name, cls = 'icon') {
@@ -207,6 +210,8 @@ const state = {
   tasks: [],
   openTaskId: null,
   filesPath: '.',
+  thinking: false,
+  models: null,
   timers: {},
 };
 
@@ -664,7 +669,7 @@ async function sendMessage(text) {
     const res = await fetch(`/api/conversations/${convId}/messages`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-SelfAI': '1' },
-      body: JSON.stringify({ content: text, model: state.model }),
+      body: JSON.stringify({ content: text, model: state.model, think: canThink() ? state.thinking : undefined }),
     });
     if (!res.ok) {
       let detail = res.statusText;
@@ -1053,11 +1058,16 @@ async function uploadToCurrentFolder(files) {
 
 function setView(view, { updateHash = true } = {}) {
   state.view = view;
-  for (const name of ['chat', 'tasks', 'files']) $(`#view-${name}`).classList.toggle('hidden', name !== view);
+  for (const name of ['chat', 'tasks', 'files', 'models']) $(`#view-${name}`).classList.toggle('hidden', name !== view);
   $$('.views .nav-btn').forEach((b) => b.classList.toggle('active', b.dataset.view === view));
   $('#model-picker').classList.toggle('hidden', view !== 'chat');
   clearInterval(state.timers.view);
-  if (view === 'tasks') {
+  clearTimeout(state.timers.models);
+  if (view === 'models') {
+    $('#view-title').textContent = 'Models';
+    if (updateHash) history.replaceState(null, '', '#models');
+    loadModels();
+  } else if (view === 'tasks') {
     $('#view-title').textContent = 'Background tasks';
     if (updateHash) history.replaceState(null, '', '#tasks');
     loadTasks();
@@ -1083,6 +1093,23 @@ function closeSidebar() {
   $('#scrim').classList.remove('open');
 }
 
+function canThink() {
+  const s = state.status;
+  return !!(s && s.provider === 'ollama' && (s.capabilities || []).includes('thinking'));
+}
+
+function updateThinkButton() {
+  const btn = $('#think-btn');
+  btn.classList.toggle('hidden', !canThink());
+  btn.classList.toggle('on', state.thinking);
+  btn.setAttribute('aria-pressed', String(state.thinking));
+}
+
+// Escape text, then show `backticked` parts as code.
+function richText(text) {
+  return escapeHtml(text).replace(/`([^`]+)`/g, '<code>$1</code>');
+}
+
 async function loadStatus() {
   try {
     state.status = await api('/api/status');
@@ -1090,23 +1117,161 @@ async function loadStatus() {
     return;
   }
   const s = state.status;
+  const local = s.provider === 'ollama';
+  state.model = s.model;
+
   const select = $('#model-select');
-  if (!select.options.length) {
-    for (const m of s.models) select.append(el('option', { value: m, text: m }));
-    const saved = storageGet('selfai-model');
-    state.model = s.models.includes(saved) ? saved : s.model;
-    select.value = state.model;
+  const options = s.models.length ? s.models : [];
+  if (select.dataset.options !== JSON.stringify(options)) {
+    select.dataset.options = JSON.stringify(options);
+    select.innerHTML = '';
+    for (const m of options) select.append(el('option', { value: m, text: m }));
+    if (!options.length) select.append(el('option', { value: '', text: local ? 'No model yet' : '—', disabled: true }));
   }
+  select.value = options.includes(s.model) ? s.model : '';
+  $('#models-nav').classList.toggle('hidden', !local);
+  updateThinkButton();
+
   const foot = $('#status-line');
   foot.innerHTML = '';
+  const label = s.ready ? `${local ? 'On this device' : 'DeepSeek API'} · ${s.model}` : 'Not ready';
   foot.append(
-    el('div', {}, el('span', { class: `dot${s.api_key_configured ? '' : ' bad'}` }), s.api_key_configured ? `Connected · ${s.model}` : 'API key missing'),
+    el('div', {}, el('span', { class: `dot${s.ready ? '' : ' bad'}` }), label),
     el('div', { text: `Search: ${s.search_provider} · v${s.version}` }));
-  const banner = $('#key-banner');
-  banner.classList.toggle('hidden', s.api_key_configured);
-  if (!s.api_key_configured) {
-    banner.innerHTML = 'No DeepSeek API key configured. Add <code>DEEPSEEK_API_KEY=…</code> to the <code>.env</code> file and restart Self-AI. Get a key at <a href="https://platform.deepseek.com/api_keys" target="_blank" rel="noopener">platform.deepseek.com</a>.';
+
+  const banner = $('#setup-banner');
+  banner.classList.toggle('hidden', s.ready);
+  banner.innerHTML = '';
+  if (!s.ready) {
+    const msg = el('span');
+    msg.innerHTML = richText(s.problem || 'The AI is not ready.');
+    banner.append(msg);
+    if (s.problem_code === 'no_models' || s.problem_code === 'model_missing') {
+      banner.append(' ', el('button', { type: 'button', class: 'btn', onclick: () => setView('models') }, icon('download'), 'Download a free model'));
+    }
   }
+}
+
+async function chooseModel(name) {
+  if (!name) return;
+  try {
+    await api('/api/models/active', { method: 'POST', body: JSON.stringify({ name }) });
+  } catch (err) { toast(err.message); }
+  await loadStatus();
+  if (state.view === 'models') loadModels();
+}
+
+/* ======================================================================
+   Models view (free local models via Ollama)
+   ====================================================================== */
+
+function capabilityBadges(caps) {
+  if (!caps) return [];
+  const labels = { tools: 'web & files', thinking: 'can think', vision: 'images', audio: 'audio' };
+  return caps.filter((c) => labels[c]).map((c) => el('span', { class: 'pill', text: labels[c] }));
+}
+
+function progressBar(pull) {
+  const pct = pull.total ? Math.floor((pull.completed / pull.total) * 100) : 0;
+  const detail = pull.total ? `${pct}% · ${humanSize(pull.completed)} of ${humanSize(pull.total)}` : pull.status;
+  return el('div', { class: 'progress-wrap' },
+    el('div', { class: 'progress' }, el('div', { class: 'progress-fill', style: `width:${pct}%` })),
+    el('div', { class: 'muted progress-text', text: detail }));
+}
+
+function modelCard(m, data) {
+  const pull = data.pulls[m.name];
+  const pulling = pull && !pull.done;
+  const active = data.active === m.name;
+  // Devices report a bit less RAM than advertised, so allow some slack.
+  const tooBig = data.ram_gb && m.min_ram_gb && data.ram_gb < m.min_ram_gb * 0.85;
+  const head = el('div', { class: 'head' },
+    el('span', { class: 'title', text: m.title || m.name }),
+    m.name === data.suggested && !m.installed ? el('span', { class: 'pill accent', text: 'Best for this device' }) : null,
+    active ? el('span', { class: 'pill ok', text: 'In use' }) : null);
+  const meta = [m.name];
+  if (m.size_gb) meta.push(`≈${m.size_gb} GB download`);
+  else if (m.size) meta.push(humanSize(m.size));
+  if (m.min_ram_gb) meta.push(`needs ${m.min_ram_gb} GB+ RAM`);
+  const actions = el('div', { class: 'model-actions' });
+  if (pulling) {
+    actions.append(progressBar(pull));
+  } else if (m.installed) {
+    if (!active) actions.append(el('button', { class: 'primary', type: 'button', onclick: () => chooseModel(m.name) }, 'Use this model'));
+    actions.append(el('button', { class: 'btn danger', type: 'button', title: 'Delete from this device', onclick: () => removeModel(m.name) }, icon('trash'), 'Delete'));
+  } else {
+    actions.append(el('button', { class: 'primary', type: 'button', onclick: () => pullModel(m.name) }, icon('download'), 'Download'));
+  }
+  return el('div', { class: `card model-card${active ? ' active' : ''}` },
+    head,
+    m.description ? el('div', { class: 'desc', text: m.description }) : null,
+    el('div', { class: 'meta muted', text: meta.join(' · ') }),
+    m.capabilities ? el('div', { class: 'pills' }, capabilityBadges(m.capabilities)) : null,
+    m.capabilities && !m.capabilities.includes('tools') ? el('div', { class: 'warn', text: "This model can't use tools, so it can't browse the web or create files." }) : null,
+    tooBig && !m.installed ? el('div', { class: 'warn', text: `This device has ${data.ram_gb} GB RAM, so this model may not fit.` }) : null,
+    pull && pull.error ? el('div', { class: 'error-box', text: `Download failed: ${pull.error}` }) : null,
+    actions);
+}
+
+async function loadModels() {
+  clearTimeout(state.timers.models);
+  let data;
+  try {
+    data = await api('/api/models');
+  } catch (err) {
+    toast(err.message);
+    return;
+  }
+  const finished = state.models && Object.entries(data.pulls).some(([name, p]) => p.done && !state.models.pulls[name]?.done);
+  state.models = data;
+  if (state.view !== 'models') return;
+
+  const suggested = data.recommended.find((r) => r.name === data.suggested);
+  $('#models-device').textContent = data.ram_gb
+    ? `This ${data.android ? 'phone' : 'device'} has ${data.ram_gb} GB RAM. Recommended: ${suggested ? suggested.title : data.suggested}.`
+    : '';
+  const errorBox = $('#models-error');
+  errorBox.innerHTML = '';
+  if (data.error) {
+    const msg = el('div', { class: 'error-box' });
+    msg.innerHTML = richText(data.error);
+    errorBox.append(msg);
+  }
+  const recommended = $('#models-recommended');
+  recommended.innerHTML = '';
+  const installedByName = Object.fromEntries(data.installed.map((m) => [m.name, m]));
+  for (const r of data.recommended) {
+    const inst = installedByName[r.name];
+    recommended.append(modelCard({ ...r, capabilities: inst?.capabilities, size: inst?.size }, data));
+  }
+  const recNames = new Set(data.recommended.map((r) => r.name));
+  const others = data.installed.filter((m) => !recNames.has(m.name));
+  const pendingOthers = Object.keys(data.pulls).filter((n) => !recNames.has(n) && !installedByName[n]);
+  $('#models-other-wrap').classList.toggle('hidden', !others.length && !pendingOthers.length);
+  const other = $('#models-other');
+  other.innerHTML = '';
+  for (const m of others) other.append(modelCard({ ...m, installed: true }, data));
+  for (const n of pendingOthers) other.append(modelCard({ name: n, installed: false }, data));
+
+  if (finished) loadStatus();
+  const busy = Object.values(data.pulls).some((p) => !p.done);
+  state.timers.models = setTimeout(loadModels, busy ? 1000 : 5000);
+}
+
+async function pullModel(name) {
+  try {
+    await api('/api/models/pull', { method: 'POST', body: JSON.stringify({ name }) });
+  } catch (err) { toast(err.message); }
+  loadModels();
+}
+
+async function removeModel(name) {
+  if (!confirm(`Delete ${name} from this device? You can download it again later.`)) return;
+  try {
+    await api(`/api/models?name=${encodeURIComponent(name)}`, { method: 'DELETE' });
+  } catch (err) { toast(err.message); }
+  await loadStatus();
+  loadModels();
 }
 
 function route() {
@@ -1117,6 +1282,7 @@ function route() {
     const id = hash.split('/')[1];
     if (id) openTask(id);
   } else if (hash === 'files') setView('files', { updateHash: false });
+  else if (hash === 'models') setView('models', { updateHash: false });
   else newChat();
 }
 
@@ -1127,7 +1293,18 @@ function init() {
   $('#open-sidebar').addEventListener('click', openSidebar);
   $('#close-sidebar').addEventListener('click', closeSidebar);
   $('#scrim').addEventListener('click', closeSidebar);
-  $('#model-select').addEventListener('change', (e) => { state.model = e.target.value; storageSet('selfai-model', state.model); });
+  $('#model-select').addEventListener('change', (e) => chooseModel(e.target.value));
+  state.thinking = storageGet('selfai-think') === '1';
+  $('#think-btn').addEventListener('click', () => {
+    state.thinking = !state.thinking;
+    storageSet('selfai-think', state.thinking ? '1' : '0');
+    updateThinkButton();
+  });
+  $('#custom-model-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const name = $('#custom-model').value.trim();
+    if (name) { pullModel(name); $('#custom-model').value = ''; }
+  });
 
   const input = $('#input');
   input.addEventListener('input', () => { autoGrow(); updateSendButton(); });

@@ -61,6 +61,10 @@ CREATE TABLE IF NOT EXISTS task_events (
     created_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_task_events_run ON task_events(run_id, id);
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 # Task statuses
@@ -105,6 +109,21 @@ class Database:
         with self._lock:
             rows = self._conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
+
+    # ------------------------------------------------------------------ settings
+
+    def get_setting(self, key: str) -> str | None:
+        row = self._one("SELECT value FROM settings WHERE key = ?", (key,))
+        return row["value"] if row else None
+
+    def set_setting(self, key: str, value: str) -> None:
+        self._execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
+
+    def delete_setting(self, key: str) -> None:
+        self._execute("DELETE FROM settings WHERE key = ?", (key,))
 
     # ------------------------------------------------------------------ chats
 

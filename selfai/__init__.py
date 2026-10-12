@@ -1,3 +1,3 @@
-"""Self-AI: an autonomous DeepSeek-powered agent with a chat UI and background tasks."""
+"""Self-AI: an autonomous AI agent with a chat UI and background tasks, running on free local models or DeepSeek."""
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

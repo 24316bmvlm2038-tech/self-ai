@@ -10,6 +10,7 @@ from . import db as store
 from .agent import Agent, task_system_prompt, task_user_prompt
 from .config import Settings
 from .errors import describe_error
+from .models import active_model
 from .tools import ToolContext
 
 log = logging.getLogger("selfai.tasks")
@@ -175,15 +176,18 @@ class TaskManager:
         status, result = store.FAILED, "Run did not finish."
         interrupted = False
         try:
-            if not self.settings.api_key_configured:
-                raise RuntimeError("DEEPSEEK_API_KEY is not set, so the AI cannot run. Add it to your .env file.")
+            problem = self.settings.config_problem()
+            if problem:
+                raise RuntimeError(problem)
             messages = [
                 {"role": "system", "content": task_system_prompt(self.settings, task)},
                 {"role": "user", "content": task_user_prompt(task)},
             ]
             ctx = ToolContext(self.settings, self, origin=f"task:{task['id']}")
             final = ""
-            async for ev in self.agent.run(messages, ctx, self.settings.task_max_steps):
+            model = active_model(self.db, self.settings)
+            think = self.settings.task_thinking
+            async for ev in self.agent.run(messages, ctx, self.settings.task_max_steps, model, think):
                 kind = ev["type"]
                 if kind == "message" and ev["message"]["role"] == "assistant":
                     msg = ev["message"]
