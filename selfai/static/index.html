@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Self-AI</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%234d6bfe'/%3E%3Cpath d='M9 20c3 3 11 3 14-2M11 12h.01M21 12h.01' stroke='white' stroke-width='3' stroke-linecap='round' fill='none'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/vendor/hljs-light.min.css" media="(prefers-color-scheme: light)">
+  <link rel="stylesheet" href="/static/vendor/hljs-dark.min.css" media="(prefers-color-scheme: dark)">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="app">
+  <div class="scrim" id="scrim"></div>
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-head">
+      <div class="brand"><span class="brand-logo" data-icon="logo"></span>Self-AI</div>
+      <button class="icon-btn mobile-only" id="close-sidebar" title="Close sidebar" data-icon="x"></button>
+    </div>
+    <button class="nav-btn new-chat" id="new-chat"><span data-icon="edit"></span>New chat</button>
+    <nav class="views">
+      <button class="nav-btn" data-view="tasks"><span data-icon="tasks"></span>Background tasks<span class="badge hidden" id="tasks-badge"></span></button>
+      <button class="nav-btn" data-view="files"><span data-icon="folder"></span>Files</button>
+    </nav>
+    <div class="conversations" id="conversations"></div>
+    <div class="sidebar-foot" id="status-line"></div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <button class="icon-btn mobile-only" id="open-sidebar" title="Open sidebar" data-icon="menu"></button>
+      <div class="topbar-title" id="view-title">Self-AI</div>
+      <label class="model-picker" id="model-picker" title="Model">
+        <select id="model-select"></select>
+      </label>
+    </header>
+
+    <!-- Chat -->
+    <section class="view" id="view-chat">
+      <div class="messages" id="messages"></div>
+      <form class="composer" id="composer">
+        <div class="banner hidden" id="key-banner"></div>
+        <div class="attachments" id="attachments"></div>
+        <div class="composer-box">
+          <button type="button" class="icon-btn" id="attach-btn" title="Attach files" data-icon="clip"></button>
+          <input type="file" id="attach-input" multiple hidden>
+          <textarea id="input" rows="1" placeholder="Message Self-AI" autocomplete="off"></textarea>
+          <button type="submit" class="send-btn" id="send-btn" title="Send" disabled data-icon="send"></button>
+        </div>
+        <div class="hint">Self-AI can search the web, create files and run tasks on its own. Check important info.</div>
+      </form>
+    </section>
+
+    <!-- Tasks -->
+    <section class="view hidden" id="view-tasks">
+      <div class="panel">
+        <form class="card task-form" id="task-form">
+          <h2>New background task</h2>
+          <p class="muted">The AI works on it autonomously: browsing, writing files, and reporting back when done.</p>
+          <input id="task-title" placeholder="Title (optional)" maxlength="200">
+          <textarea id="task-goal" rows="4" placeholder="What should the AI do? e.g. Research the 5 most important AI news stories this week and write a report to reports/ai-news.md" required></textarea>
+          <div class="task-options">
+            <label>Start in <input type="number" id="task-delay" min="0" step="1" value="0"> min</label>
+            <label class="check"><input type="checkbox" id="task-repeat"> Repeat every <input type="number" id="task-interval" min="1" step="1" value="60"> min</label>
+            <button type="submit" class="primary">Start task</button>
+          </div>
+        </form>
+        <div class="task-list" id="task-list"></div>
+      </div>
+      <div class="drawer hidden" id="task-drawer"></div>
+    </section>
+
+    <!-- Files -->
+    <section class="view hidden" id="view-files">
+      <div class="panel">
+        <div class="files-toolbar">
+          <div class="breadcrumb" id="breadcrumb"></div>
+          <div class="toolbar-actions">
+            <button class="btn" id="files-refresh" title="Refresh"><span data-icon="refresh"></span></button>
+            <button class="btn" id="files-upload-btn"><span data-icon="upload"></span>Upload</button>
+            <input type="file" id="files-upload" multiple hidden>
+          </div>
+        </div>
+        <div class="file-list" id="file-list"></div>
+      </div>
+      <div class="drawer hidden" id="file-drawer"></div>
+    </section>
+  </main>
+</div>
+
+<script src="/static/vendor/marked.min.js"></script>
+<script src="/static/vendor/purify.min.js"></script>
+<script src="/static/vendor/highlight.min.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,17 @@
+# Runs Self-AI as an always-on service: it restarts automatically, and background
+# tasks keep running whether or not the browser is open.
+services:
+  selfai:
+    build: .
+    env_file: .env
+    environment:
+      SELFAI_HOST: 0.0.0.0
+      SELFAI_DATA_DIR: /data
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - selfai-data:/data
+    restart: unless-stopped
+
+volumes:
+  selfai-data:
