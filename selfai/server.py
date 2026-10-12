@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import mimetypes
@@ -31,6 +32,7 @@ from .tools import ToolError, build_registry
 from .tools.files import list_entries, relative, resolve_path
 
 STATIC_DIR = Path(__file__).parent / "static"
+KEEPALIVE_SECONDS = 10.0
 mimetypes.add_type("application/manifest+json", ".webmanifest")
 
 
@@ -155,7 +157,7 @@ def create_app(
     settings = settings or Settings.from_env()
     settings.ensure_dirs()
     db = Database(settings.db_path)
-    ollama = ollama or OllamaClient(settings.ollama_url)
+    ollama = ollama or OllamaClient(settings.ollama_url, log_path=settings.data_dir / "ollama.log")
     agent = Agent(llm or build_llm(settings, ollama), build_registry(), settings)
     tasks = TaskManager(db, agent, settings)
     chat = ChatService(db, agent, settings, tasks)
@@ -194,6 +196,7 @@ def create_app(
         names = settings.models
         capabilities = None
         if settings.is_local and not problem:
+            await ollama.ensure_running()
             try:
                 model, names = await models.resolve_active()
             except LLMError as exc:
@@ -325,7 +328,13 @@ def create_app(
 
         async def events():
             while True:
-                ev = await queue.get()
+                try:
+                    ev = await asyncio.wait_for(queue.get(), timeout=KEEPALIVE_SECONDS)
+                except asyncio.TimeoutError:
+                    # A phone can take a minute to read the prompt before the first word;
+                    # keep the connection visibly alive meanwhile.
+                    yield ": keep-alive\n\n"
+                    continue
                 if ev is None:
                     yield "event: end\ndata: {}\n\n"
                     return
@@ -466,10 +475,13 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: Starlette):
+        starting = asyncio.create_task(ollama.ensure_running()) if settings.is_local else None
         await tasks.start()
         try:
             yield
         finally:
+            if starting:
+                starting.cancel()
             await chat.shutdown()
             await tasks.stop()
             await models.shutdown()

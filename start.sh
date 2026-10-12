@@ -60,6 +60,24 @@ if $termux; then
   # Keep running (and finishing background tasks) while the screen is off.
   command -v termux-wake-lock >/dev/null 2>&1 && termux-wake-lock
   command -v termux-open-url >/dev/null 2>&1 && (sleep 4; termux-open-url "http://localhost:$port") &
+
+  # Android sometimes kills background processes to free memory. Start Self-AI again
+  # when that happens (Ctrl+C still quits; a crash right at startup is not retried).
+  trap 'exit 0' INT TERM
+  while true; do
+    started=$SECONDS
+    set +e
+    python -m selfai "$@"
+    code=$?
+    set -e
+    if [ "$code" -eq 0 ] || [ $(( SECONDS - started )) -lt 15 ]; then
+      exit "$code"
+    fi
+    echo
+    echo "Self-AI was stopped (exit code $code), probably by Android to free memory. Restarting..."
+    echo "If this keeps happening, pick a smaller model in the Models panel."
+    sleep 2
+  done
 fi
 
 exec python -m selfai "$@"

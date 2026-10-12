@@ -3,12 +3,21 @@ on this device - including Android phones via Termux."""
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
+import os
+import shutil
+import subprocess
+from pathlib import Path
 from typing import AsyncIterator
 
 import httpx
 
 from .errors import LLMError
+
+log = logging.getLogger("selfai.ollama")
+LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 
 def normalize_model_name(name: str) -> str:
@@ -18,10 +27,12 @@ def normalize_model_name(name: str) -> str:
 
 
 class OllamaClient:
-    def __init__(self, base_url: str, transport: httpx.AsyncBaseTransport | None = None):
+    def __init__(self, base_url: str, transport: httpx.AsyncBaseTransport | None = None, log_path: Path | None = None):
         self.base_url = base_url.rstrip("/")
         self._transport = transport
+        self._log_path = log_path
         self._capabilities: dict[str, set[str]] = {}
+        self._start_lock = asyncio.Lock()
 
     def _client(self, timeout: httpx.Timeout | float) -> httpx.AsyncClient:
         # trust_env=False: never send local traffic through an HTTP proxy from the environment.
@@ -32,6 +43,49 @@ class OllamaClient:
             f"Can't reach Ollama at {self.base_url}. Start it with `ollama serve` "
             "(start.sh does this for you), or install it from https://ollama.com/download."
         )
+
+    async def is_up(self) -> bool:
+        try:
+            async with self._client(3.0) as client:
+                resp = await client.get("/api/version")
+        except httpx.HTTPError:
+            return False
+        return resp.status_code == 200
+
+    async def ensure_running(self) -> bool:
+        """Start a local `ollama serve` if it's installed but not running. Android may stop it
+        in the background to free memory; this brings it back instead of failing."""
+        if await self.is_up():
+            return True
+        url = httpx.URL(self.base_url)
+        if url.host not in LOCAL_HOSTS or shutil.which("ollama") is None:
+            return False
+        async with self._start_lock:
+            if await self.is_up():
+                return True
+            log.warning("Ollama isn't running; starting it")
+            env = {**os.environ, "OLLAMA_HOST": f"{url.host}:{url.port or 11434}"}
+            out = open(self._log_path, "ab") if self._log_path else subprocess.DEVNULL  # noqa: SIM115
+            try:
+                subprocess.Popen(
+                    ["ollama", "serve"],
+                    stdin=subprocess.DEVNULL,
+                    stdout=out,
+                    stderr=out,
+                    env=env,
+                    start_new_session=True,
+                )
+            except OSError as exc:
+                log.warning("Could not start Ollama: %s", exc)
+                return False
+            finally:
+                if out is not subprocess.DEVNULL:
+                    out.close()
+            for _ in range(60):
+                await asyncio.sleep(0.5)
+                if await self.is_up():
+                    return True
+        return False
 
     async def _request(self, method: str, path: str, timeout: float = 15.0, **kwargs) -> dict:
         try:

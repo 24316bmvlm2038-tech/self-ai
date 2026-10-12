@@ -12,11 +12,14 @@ from .conftest import FakeOllama, run
     "ram,android,expected",
     [
         (3.6, True, "qwen3.5:0.8b"),  # "4 GB" phone
-        (5.5, True, "qwen3.5:2b"),  # "6 GB" phone
-        (7.3, True, "qwen3.5:4b"),  # "8 GB" phone
+        (5.5, True, "qwen3.5:0.8b"),  # "6 GB" phone
+        (7.3, True, "qwen3.5:2b"),  # "8 GB" phone: 4B leaves too little for Android + browser
+        (11.2, True, "qwen3.5:4b"),  # "12 GB" phone
         (15.5, True, "qwen3.5:4b"),  # phone CPUs are too slow for 9B
+        (None, True, "qwen3.5:2b"),
+        (5.5, False, "qwen3.5:2b"),
+        (7.8, False, "qwen3.5:4b"),  # "8 GB" computer
         (15.5, False, "qwen3.5:9b"),  # "16 GB" computer
-        (7.8, False, "qwen3.5:4b"),
         (None, False, "qwen3.5:4b"),
     ],
 )
@@ -117,3 +120,31 @@ def test_active_model_for_deepseek_must_be_offered(settings):
     assert active_model(db, settings) == "deepseek-chat"
     db.set_setting("model", "deepseek-reasoner")
     assert active_model(db, settings) == "deepseek-reasoner"
+
+
+def test_ollama_is_restarted_when_android_stopped_it(monkeypatch):
+    fake = FakeOllama()
+    fake.up = False
+    started = []
+
+    def fake_popen(cmd, **kwargs):
+        started.append((cmd, kwargs["env"]["OLLAMA_HOST"]))
+        fake.up = True
+
+    monkeypatch.setattr("selfai.ollama.shutil.which", lambda name: "/usr/bin/ollama")
+    monkeypatch.setattr("selfai.ollama.subprocess.Popen", fake_popen)
+    client = fake.client("http://127.0.0.1:11500")
+    assert run(client.ensure_running()) is True
+    assert started == [(["ollama", "serve"], "127.0.0.1:11500")]
+    assert run(client.ensure_running()) is True  # already up: not started twice
+    assert len(started) == 1
+
+
+def test_ollama_not_started_when_remote_or_missing(monkeypatch):
+    fake = FakeOllama()
+    fake.up = False
+    monkeypatch.setattr("selfai.ollama.subprocess.Popen", lambda *a, **k: pytest.fail("should not start"))
+    monkeypatch.setattr("selfai.ollama.shutil.which", lambda name: "/usr/bin/ollama")
+    assert run(fake.client("http://192.168.1.5:11434").ensure_running()) is False
+    monkeypatch.setattr("selfai.ollama.shutil.which", lambda name: None)
+    assert run(fake.client("http://127.0.0.1:11434").ensure_running()) is False

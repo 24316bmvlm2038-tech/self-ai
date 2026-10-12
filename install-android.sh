@@ -22,11 +22,12 @@ if ! pkg install -y python ollama; then
   exit 1
 fi
 
-# Pick the best model this phone can run. Phones report a bit less RAM than advertised.
+# Pick the best model this phone can run. Phones report a bit less RAM than advertised, and
+# Android + the browser need ~4 GB, or Android kills Termux in the middle of a reply.
 ram_kb=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
 ram_tenths=$(( ram_kb * 10 / 1024 / 1024 ))
-if   [ "$ram_tenths" -lt 45 ]; then model="qwen3.5:0.8b"
-elif [ "$ram_tenths" -lt 68 ]; then model="qwen3.5:2b"
+if   [ "$ram_tenths" -lt 70 ]; then model="qwen3.5:0.8b"
+elif [ "$ram_tenths" -lt 100 ]; then model="qwen3.5:2b"
 else model="qwen3.5:4b"; fi
 model="${MODEL:-$model}"
 echo "==> This phone has about $(( ram_tenths / 10 )).$(( ram_tenths % 10 )) GB RAM, so Self-AI will use $model."

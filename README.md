@@ -14,9 +14,9 @@ Self-AI uses [Ollama](https://ollama.com) to download and run open models. Pick 
 
 | Model | Download | Good for |
 |---|---|---|
-| **Qwen 3.5 · 4B** (`qwen3.5:4b`) | ≈3.4 GB | Most phones with 8 GB+ RAM. The default. |
-| Qwen 3.5 · 2B (`qwen3.5:2b`) | ≈2.7 GB | Phones with 6 GB RAM, or when you want faster replies |
-| Qwen 3.5 · 0.8B (`qwen3.5:0.8b`) | ≈1 GB | Older phones (4 GB RAM). Simple tasks. |
+| **Qwen 3.5 · 4B** (`qwen3.5:4b`) | ≈3.4 GB | Phones with 12 GB+ RAM, and computers. The default on computers. |
+| **Qwen 3.5 · 2B** (`qwen3.5:2b`) | ≈2.7 GB | Phones with 8 GB RAM. Leaves room for Android and the browser. |
+| Qwen 3.5 · 0.8B (`qwen3.5:0.8b`) | ≈1 GB | Phones with 4–6 GB RAM. Simple tasks. |
 | Qwen 3.5 · 9B (`qwen3.5:9b`) | ≈6.6 GB | Computers with 16 GB RAM. Much smarter. |
 | Gemma 4 · E2B (`gemma4:e2b`) | ≈7.2 GB | Google's model; also understands images and audio |
 
@@ -37,6 +37,18 @@ You can also download any other model from [ollama.com/library](https://ollama.c
 Next time, open Termux and type `selfai`. Keep Termux running in the background while you use the app. Background tasks also only run while Termux is running, and the phone stays awake while it does.
 
 **What to expect:** the AI runs on the phone's processor. Replies take a few seconds to start, and longer for the very first message or with **Think** on. A phone with 8 GB+ RAM and a recent chip works best.
+
+### If you see "Lost connection" or "network error"
+
+This means Android stopped Termux, usually to free memory while the model was working. Open Termux and type `selfai`; the page reconnects by itself. On a phone, `start.sh` also restarts Self-AI automatically, and Self-AI restarts Ollama if it was stopped. To stop it happening:
+
+1. **Use a smaller model.** In **Models**, pick the one marked *Best for this device* (on an 8 GB phone, that's Qwen 3.5 · 2B).
+2. **Let Termux run in the background:** Android Settings → Apps → Termux → Battery → **Unrestricted**.
+3. **Turn off Android's background process limit** (Android 12 and newer), in **Developer options**:
+   - Android 14+: turn on **Disable child process restrictions**.
+   - Android 12–13: open **Feature flags** and turn off **settings_enable_monitor_phantom_procs**.
+
+   To show Developer options, go to Settings → About phone and tap **Build number** 7 times.
 
 **iPhone:** iOS doesn't allow apps like Termux, so Self-AI can't run on an iPhone itself. Run it on a computer and open it from the iPhone's browser instead (see [Use from your phone](#use-from-your-phone-or-another-device)).
 

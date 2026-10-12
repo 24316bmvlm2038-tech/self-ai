@@ -22,22 +22,22 @@ RECOMMENDED_MODELS = [
         "name": "qwen3.5:4b",
         "title": "Qwen 3.5 · 4B",
         "size_gb": 3.4,
-        "min_ram_gb": 8,
-        "description": "Best pick for most phones with 8 GB+ RAM. Strong reasoning, reliable tool use, can think step by step.",
+        "min_ram_gb": 12,
+        "description": "Smartest pick for phones with 12 GB+ RAM, and for computers. Strong reasoning and reliable tool use.",
     },
     {
         "name": "qwen3.5:2b",
         "title": "Qwen 3.5 · 2B",
         "size_gb": 2.7,
-        "min_ram_gb": 6,
-        "description": "Faster and lighter. Good for phones with 6 GB RAM.",
+        "min_ram_gb": 8,
+        "description": "Best for phones with 8 GB RAM: leaves room for Android and your browser. Faster replies.",
     },
     {
         "name": "qwen3.5:0.8b",
         "title": "Qwen 3.5 · 0.8B",
         "size_gb": 1.0,
         "min_ram_gb": 4,
-        "description": "Tiny and quick, for older phones. Handles simple questions and tasks.",
+        "description": "Tiny and quick, for phones with 4-6 GB RAM. Handles simple questions and tasks.",
     },
     {
         "name": "qwen3.5:9b",
@@ -77,15 +77,20 @@ def device_ram_gb() -> float | None:
 
 def suggest_model(ram_gb: float | None, android: bool) -> str:
     """The best recommended model this device can run comfortably. Devices report less RAM
-    than advertised (an "8 GB" phone shows about 7.3 GB), hence the lower thresholds."""
+    than advertised (an "8 GB" phone shows about 7.3 GB). On a phone, Android and the browser
+    need ~4 GB too, and if memory runs out Android kills Termux in the middle of a reply."""
     if ram_gb is None:
-        return "qwen3.5:4b"
-    if ram_gb < 4.5:
-        return "qwen3.5:0.8b"
-    if ram_gb < 6.8:
-        return "qwen3.5:2b"
-    if android or ram_gb < 14:
+        return "qwen3.5:2b" if android else "qwen3.5:4b"
+    if android:
+        if ram_gb < 7:
+            return "qwen3.5:0.8b"
+        if ram_gb < 10:
+            return "qwen3.5:2b"
         return "qwen3.5:4b"  # bigger models are too slow on phone CPUs
+    if ram_gb < 6:
+        return "qwen3.5:2b"
+    if ram_gb < 14:
+        return "qwen3.5:4b"
     return "qwen3.5:9b"
 
 

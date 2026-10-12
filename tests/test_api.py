@@ -306,3 +306,20 @@ def test_new_task_starts_immediately_without_waiting_for_poll(settings, make_cli
     time.sleep(0.2)  # let the scheduler settle into its long wait
     task_id = client.post("/api/tasks", json={"goal": "quick"}, headers=H).json()["id"]
     wait_until(lambda: client.get(f"/api/tasks/{task_id}").json()["status"] == "completed", timeout=3)
+
+
+def test_stream_sends_keep_alive_while_model_is_slow(make_client, monkeypatch):
+    import asyncio
+
+    monkeypatch.setattr("selfai.server.KEEPALIVE_SECONDS", 0.05)
+
+    async def slow():
+        await asyncio.sleep(0.3)  # e.g. a phone reading a long prompt
+        return "Finally!"
+
+    client = make_client(FakeLLM(responder=lambda m, t: slow()))
+    conv = client.post("/api/conversations", json={}, headers=H).json()
+    with client.stream("POST", f"/api/conversations/{conv['id']}/messages", json={"content": "hi"}, headers=H) as r:
+        lines = [line for line in r.iter_lines() if line]
+    assert ": keep-alive" in lines
+    assert lines[-2:] == ["event: end", "data: {}"]

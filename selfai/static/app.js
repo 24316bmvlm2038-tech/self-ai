@@ -679,6 +679,7 @@ async function sendMessage(text) {
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
+    let ended = false;
     for (;;) {
       const { value, done } = await reader.read();
       if (done) break;
@@ -687,11 +688,13 @@ async function sendMessage(text) {
       while ((idx = buffer.indexOf('\n\n')) >= 0) {
         const raw = buffer.slice(0, idx);
         buffer = buffer.slice(idx + 2);
-        handleStreamEvent(raw, view);
+        if (handleStreamEvent(raw, view) === 'end') ended = true;
       }
     }
+    if (!ended) throw new TypeError('connection closed');
   } catch (err) {
-    view.addError(err.message || String(err));
+    if (err instanceof TypeError) await recoverFromDisconnect(convId, view);
+    else view.addError(err.message || String(err));
   } finally {
     view.hideTyping();
     view.markUnfinishedTools();
@@ -711,7 +714,8 @@ function handleStreamEvent(raw, view) {
     if (line.startsWith('event:')) eventName = line.slice(6).trim();
     else if (line.startsWith('data:')) data += line.slice(5).trim();
   }
-  if (eventName === 'end' || !data) return;
+  if (eventName === 'end') return 'end';
+  if (!data) return null; // keep-alive
   let ev;
   try { ev = JSON.parse(data); } catch { return; }
   switch (ev.type) {
@@ -728,6 +732,43 @@ function handleStreamEvent(raw, view) {
     default: break;
   }
   scrollToBottom(false, view.root);
+}
+
+const OFFLINE_HELP =
+  "Lost connection to Self-AI: it stopped running. On a phone this usually means Android closed Termux to free " +
+  'memory. Open Termux and type `selfai` to start it again; this page reconnects by itself. If it keeps happening, ' +
+  'pick a smaller model in Models, and set Termux\'s battery usage to "Unrestricted" in Android settings.';
+
+async function serverReachable() {
+  try {
+    return (await fetch('/api/status', { cache: 'no-store' })).ok;
+  } catch {
+    return false;
+  }
+}
+
+// The reply runs on the server, so a dropped connection doesn't lose it if Self-AI is still running.
+async function recoverFromDisconnect(convId, view) {
+  if (await serverReachable()) {
+    view.addNotice('The connection dropped. Reconnecting…');
+    if (state.convId === convId) setTimeout(() => openConversation(convId, { updateHash: false }), 300);
+    return;
+  }
+  const box = el('div', { class: 'error-box' });
+  box.innerHTML = richText(OFFLINE_HELP);
+  view.segment = null;
+  view.append(box);
+  waitForServer(convId);
+}
+
+function waitForServer(convId) {
+  clearTimeout(state.timers.offline);
+  state.timers.offline = setTimeout(async () => {
+    if (!(await serverReachable())) return waitForServer(convId);
+    await loadStatus();
+    loadConversations();
+    if (state.convId === convId) openConversation(convId, { updateHash: false });
+  }, 3000);
 }
 
 async function stopGenerating() {
@@ -1114,6 +1155,11 @@ async function loadStatus() {
   try {
     state.status = await api('/api/status');
   } catch {
+    const banner = $('#setup-banner');
+    banner.innerHTML = richText(OFFLINE_HELP);
+    banner.classList.remove('hidden');
+    $('#status-line').innerHTML = '';
+    $('#status-line').append(el('div', {}, el('span', { class: 'dot bad' }), 'Not running'));
     return;
   }
   const s = state.status;
@@ -1184,7 +1230,7 @@ function modelCard(m, data) {
   const pulling = pull && !pull.done;
   const active = data.active === m.name;
   // Devices report a bit less RAM than advertised, so allow some slack.
-  const tooBig = data.ram_gb && m.min_ram_gb && data.ram_gb < m.min_ram_gb * 0.85;
+  const tooBig = data.android && data.ram_gb && m.min_ram_gb && data.ram_gb < m.min_ram_gb * 0.85;
   const head = el('div', { class: 'head' },
     el('span', { class: 'title', text: m.title || m.name }),
     m.name === data.suggested && !m.installed ? el('span', { class: 'pill accent', text: 'Best for this device' }) : null,
@@ -1192,7 +1238,7 @@ function modelCard(m, data) {
   const meta = [m.name];
   if (m.size_gb) meta.push(`≈${m.size_gb} GB download`);
   else if (m.size) meta.push(humanSize(m.size));
-  if (m.min_ram_gb) meta.push(`needs ${m.min_ram_gb} GB+ RAM`);
+  if (m.min_ram_gb) meta.push(`phones: ${m.min_ram_gb} GB+ RAM`);
   const actions = el('div', { class: 'model-actions' });
   if (pulling) {
     actions.append(progressBar(pull));
@@ -1208,7 +1254,7 @@ function modelCard(m, data) {
     el('div', { class: 'meta muted', text: meta.join(' · ') }),
     m.capabilities ? el('div', { class: 'pills' }, capabilityBadges(m.capabilities)) : null,
     m.capabilities && !m.capabilities.includes('tools') ? el('div', { class: 'warn', text: "This model can't use tools, so it can't browse the web or create files." }) : null,
-    tooBig && !m.installed ? el('div', { class: 'warn', text: `This device has ${data.ram_gb} GB RAM, so this model may not fit.` }) : null,
+    tooBig ? el('div', { class: 'warn', text: `This phone has ${data.ram_gb} GB RAM, so this model may not fit. If Self-AI keeps stopping, use a smaller one.` }) : null,
     pull && pull.error ? el('div', { class: 'error-box', text: `Download failed: ${pull.error}` }) : null,
     actions);
 }

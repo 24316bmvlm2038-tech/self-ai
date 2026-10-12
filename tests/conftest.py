@@ -77,8 +77,8 @@ class FakeOllama:
         self.pull_gate: asyncio.Event | None = None
         self.up = True
 
-    def client(self) -> OllamaClient:
-        return OllamaClient("http://ollama.test", transport=httpx.MockTransport(self.handle))
+    def client(self, base_url: str = "http://ollama.test") -> OllamaClient:
+        return OllamaClient(base_url, transport=httpx.MockTransport(self.handle))
 
     @staticmethod
     def ndjson(chunks: list[dict]) -> httpx.Response:
@@ -89,6 +89,8 @@ class FakeOllama:
             raise httpx.ConnectError("connection refused", request=request)
         path = request.url.path
         body = json.loads(request.content) if request.content else {}
+        if path == "/api/version":
+            return httpx.Response(200, json={"version": "0.30.0"})
         if path == "/api/tags":
             return httpx.Response(
                 200,

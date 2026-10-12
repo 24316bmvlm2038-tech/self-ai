@@ -209,6 +209,7 @@ class OllamaLLM:
         self, messages: list[dict], tools: list[dict] | None = None, model: str | None = None, think: bool | None = None
     ) -> AsyncIterator[dict]:
         model = model or self.settings.model
+        await self.client.ensure_running()
         caps = await self.client.capabilities(model)
         options: dict = {"num_ctx": self.settings.context_tokens}
         if self.settings.temperature is not None:
