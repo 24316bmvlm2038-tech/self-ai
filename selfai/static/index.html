@@ -81,8 +81,9 @@
     <section class="view hidden" id="view-models">
       <div class="panel">
         <div class="section-title">Where your AI runs</div>
-        <p class="muted section-note">On this device is private but slow on phones. The free cloud options answer in seconds; your messages are sent to that company.</p>
+        <p class="muted section-note" id="providers-note">On this device is private but slow on phones. The free cloud options answer in seconds; your messages are sent to that company.</p>
         <div id="providers" class="model-list"></div>
+        <div id="local-models">
         <div class="section-title">Models on this device</div>
         <div class="card models-intro">
           <h2>Free AI models</h2>
@@ -101,6 +102,7 @@
           <input id="custom-model" placeholder="Name from ollama.com/library, e.g. llama3.2:3b" autocomplete="off" autocapitalize="off" spellcheck="false">
           <button type="submit" class="primary">Download</button>
         </form>
+        </div>
       </div>
     </section>
 

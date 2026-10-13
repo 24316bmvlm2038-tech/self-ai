@@ -24,7 +24,8 @@ SESSION_COOKIE = "selfai_session"
 SESSION_SECONDS = 30 * 24 * 3600
 # Headers that tunnels and reverse proxies add: their presence means the request came from outside.
 PROXY_HEADERS = {b"cf-connecting-ip", b"cf-ray", b"x-forwarded-for", b"forwarded", b"x-real-ip"}
-PUBLIC_PREFIXES = ("/static/", "/sw.js", "/login")
+# /api/cron/ checks its own secret (the scheduler can't sign in).
+PUBLIC_PREFIXES = ("/static/", "/sw.js", "/login", "/api/cron/")
 LOOPBACK = {"127.0.0.1", "::1", "localhost"}
 MAX_FAILURES, LOCKOUT_SECONDS = 10, 600
 

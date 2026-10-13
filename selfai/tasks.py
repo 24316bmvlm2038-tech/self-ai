@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from typing import TYPE_CHECKING, Awaitable
 
 from . import db as store
 from .agent import Agent, task_system_prompt, task_user_prompt
@@ -13,17 +14,50 @@ from .errors import describe_error
 from .providers import active_model, config_problem, run_settings
 from .tools import ToolContext
 
+if TYPE_CHECKING:
+    from .remote import WorkspaceSync
+
 log = logging.getLogger("selfai.tasks")
 
 MIN_INTERVAL_MINUTES = 1.0
 EVENT_TEXT_LIMIT = 4000
+STALE_MARGIN_SECONDS = 180  # a run older than its time limit plus this was killed with its server
+
+
+class TimeLimitReached(Exception):
+    pass
+
+
+async def run_with_time_limit(coro: Awaitable, seconds: float):
+    """Await `coro`, cancelling it after `seconds` (0 = no limit) with TimeLimitReached."""
+    if not seconds:
+        return await coro
+    inner = asyncio.ensure_future(coro)
+    try:
+        done, _ = await asyncio.wait({inner}, timeout=seconds)
+    except asyncio.CancelledError:
+        inner.cancel()
+        await asyncio.gather(inner, return_exceptions=True)
+        raise
+    if not done:
+        inner.cancel()
+        await asyncio.gather(inner, return_exceptions=True)
+        raise TimeLimitReached()
+    return inner.result()
 
 
 class TaskManager:
-    def __init__(self, db: store.Database, agent: Agent, settings: Settings):
+    def __init__(
+        self,
+        db: store.Database,
+        agent: Agent,
+        settings: Settings,
+        files: "WorkspaceSync | None" = None,
+    ):
         self.db = db
         self.agent = agent
         self.settings = settings
+        self.files = files  # cloud: workspace files stored in the database
         self._running: dict[str, asyncio.Task] = {}
         self._wake = asyncio.Event()
         self._loop_task: asyncio.Task | None = None
@@ -33,6 +67,8 @@ class TaskManager:
     # ------------------------------------------------------------------ lifecycle
 
     async def start(self) -> None:
+        if self.settings.cloud:
+            return  # serverless: no background loop; the scheduler calls tick()
         recovered = self.db.recover_interrupted()
         if recovered:
             log.info("Re-queued %d task(s) interrupted by the last shutdown", recovered)
@@ -145,6 +181,33 @@ class TaskManager:
 
     # ------------------------------------------------------------------ scheduler
 
+    async def tick(self) -> dict:
+        """One scheduler round, for servers that don't stay running (the web version): an
+        external scheduler calls this every minute while tasks are due. Runs them to the end."""
+        recovered = self.recover_stale()
+        jobs = {}
+        for task in self.db.due_tasks(time.time(), self.settings.max_concurrent_tasks):
+            job = self._launch(task)
+            if job:
+                jobs[task["id"]] = job
+        await asyncio.gather(*jobs.values(), return_exceptions=True)
+        return {"recovered": recovered, "ran": list(jobs)}
+
+    def recover_stale(self) -> int:
+        """Finish runs whose server was stopped mid-run (they can't report back themselves)."""
+        if not self.settings.run_time_limit:
+            return 0
+        cutoff = time.time() - self.settings.run_time_limit - STALE_MARGIN_SECONDS
+        count = 0
+        for run in self.db.stale_runs(cutoff):
+            if run["task_id"] in self._running:
+                continue
+            message = "Interrupted: the server stopped before this run finished."
+            self.db.add_event(run["id"], "error", {"content": message})
+            self._finish({"id": run["task_id"]}, run["id"], store.FAILED, message, False)
+            count += 1
+        return count
+
     async def _scheduler(self) -> None:
         while True:
             self._wake.clear()
@@ -159,8 +222,9 @@ class TaskManager:
             except asyncio.TimeoutError:
                 pass
 
-    def _launch(self, task: dict) -> None:
-        self.db.update_task(task["id"], status=store.RUNNING)
+    def _launch(self, task: dict) -> asyncio.Task | None:
+        if not self.db.claim_task(task["id"]):
+            return None  # another server took it
         run_id = self.db.create_run(task["id"])
         job = asyncio.create_task(self._run(task, run_id), name=f"selfai-task-{task['id']}")
         self._running[task["id"]] = job
@@ -171,6 +235,7 @@ class TaskManager:
 
         job.add_done_callback(_done)
         log.info("Started task %s (%s), run %d", task["id"], task["title"], run_id)
+        return job
 
     async def _run(self, task: dict, run_id: int) -> None:
         status, result = store.FAILED, "Run did not finish."
@@ -179,33 +244,7 @@ class TaskManager:
             problem = config_problem(self.db, self.settings)
             if problem:
                 raise RuntimeError(problem)
-            settings = run_settings(self.db, self.settings)
-            messages = [
-                {"role": "system", "content": task_system_prompt(settings, task)},
-                {"role": "user", "content": task_user_prompt(task)},
-            ]
-            ctx = ToolContext(settings, self, origin=f"task:{task['id']}")
-            final = ""
-            model = active_model(self.db, settings)
-            think = settings.task_thinking
-            async for ev in self.agent.run(messages, ctx, settings.task_max_steps, model, think):
-                kind = ev["type"]
-                if kind == "message" and ev["message"]["role"] == "assistant":
-                    msg = ev["message"]
-                    if msg["content"] and msg.get("tool_calls"):
-                        self.db.add_event(run_id, "thought", {"content": msg["content"][:EVENT_TEXT_LIMIT]})
-                elif kind == "tool_call":
-                    self.db.add_event(run_id, "tool_call", {"name": ev["name"], "arguments": ev["arguments"]})
-                elif kind == "tool_result":
-                    self.db.add_event(
-                        run_id,
-                        "tool_result",
-                        {"name": ev["name"], "ok": ev["ok"], "content": ev["content"][:EVENT_TEXT_LIMIT]},
-                    )
-                elif kind == "notice":
-                    self.db.add_event(run_id, "notice", {"content": ev["text"]})
-                elif kind == "done":
-                    final = ev["content"]
+            final = await run_with_time_limit(self._work(task, run_id), self.settings.run_time_limit)
             status = store.COMPLETED
             result = final.strip() or "(The task finished without a final report.)"
             self.db.add_event(run_id, "final", {"content": result})
@@ -215,12 +254,54 @@ class TaskManager:
             result = "Interrupted by shutdown; will resume on restart." if interrupted else "Cancelled."
             self.db.add_event(run_id, "notice", {"content": result})
             raise
+        except TimeLimitReached:
+            minutes = self.settings.run_time_limit / 60
+            result = (
+                f"Stopped after {minutes:g} minutes, the time limit for one run on the web version. "
+                "Split the goal into smaller tasks, or ask for less per run."
+            )
+            self.db.add_event(run_id, "error", {"content": result})
         except Exception as exc:  # noqa: BLE001 - record any failure on the run
             log.exception("Task %s failed", task["id"])
             result = describe_error(exc)
             self.db.add_event(run_id, "error", {"content": result})
         finally:
             self._finish(task, run_id, status, result, interrupted)
+
+    async def _work(self, task: dict, run_id: int) -> str:
+        """The agent loop for one run; returns its final report."""
+        if self.files:
+            await self.files.pull()
+        settings = run_settings(self.db, self.settings)
+        messages = [
+            {"role": "system", "content": task_system_prompt(settings, task)},
+            {"role": "user", "content": task_user_prompt(task)},
+        ]
+        ctx = ToolContext(
+            settings, self, origin=f"task:{task['id']}", after_tool=self.files.push if self.files else None
+        )
+        final = ""
+        model = active_model(self.db, settings)
+        think = settings.task_thinking
+        async for ev in self.agent.run(messages, ctx, settings.task_max_steps, model, think):
+            kind = ev["type"]
+            if kind == "message" and ev["message"]["role"] == "assistant":
+                msg = ev["message"]
+                if msg["content"] and msg.get("tool_calls"):
+                    self.db.add_event(run_id, "thought", {"content": msg["content"][:EVENT_TEXT_LIMIT]})
+            elif kind == "tool_call":
+                self.db.add_event(run_id, "tool_call", {"name": ev["name"], "arguments": ev["arguments"]})
+            elif kind == "tool_result":
+                self.db.add_event(
+                    run_id,
+                    "tool_result",
+                    {"name": ev["name"], "ok": ev["ok"], "content": ev["content"][:EVENT_TEXT_LIMIT]},
+                )
+            elif kind == "notice":
+                self.db.add_event(run_id, "notice", {"content": ev["text"]})
+            elif kind == "done":
+                final = ev["content"]
+        return final
 
     def _finish(self, task: dict, run_id: int, status: str, result: str, interrupted: bool) -> None:
         self.db.finish_run(run_id, status, result)

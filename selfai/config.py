@@ -97,6 +97,15 @@ class Settings:
     max_active_tasks: int = 50
     scheduler_poll_seconds: float = 5.0
 
+    # Always-on web version (serverless hosting such as Vercel): data lives in Supabase, and
+    # background tasks are started by a scheduler calling /api/cron/tick.
+    cloud: bool = False
+    supabase_url: str = ""
+    supabase_key: str = ""
+    db_secret: str = ""  # sent with every database request; checked by the database
+    cron_secret: str = ""  # proves a /api/cron/tick call comes from the scheduler
+    run_time_limit: float = 0.0  # seconds per reply or task run (0 = no limit)
+
     # Internet
     allow_private_network: bool = False
     tavily_api_key: str = ""
@@ -137,9 +146,14 @@ class Settings:
             load_dotenv(env_file)
         env = os.environ.get
         api_key = env("DEEPSEEK_API_KEY", "").strip()
-        provider = env("SELFAI_PROVIDER", "").strip().lower() or ("deepseek" if api_key else "ollama")
+        supabase_url = env("SELFAI_SUPABASE_URL", "").strip().rstrip("/")
+        cloud = bool(supabase_url)
+        default_provider = "deepseek" if api_key else ("groq" if cloud else "ollama")
+        provider = env("SELFAI_PROVIDER", "").strip().lower() or default_provider
         if provider not in PROVIDERS:
             raise ValueError(f"SELFAI_PROVIDER must be one of {', '.join(PROVIDERS)}, got '{provider}'")
+        if cloud and provider == "ollama":
+            provider = default_provider  # a web server has no on-device models
         local = provider == "ollama"
 
         deepseek_models = [m.strip() for m in env("DEEPSEEK_MODELS", "").split(",") if m.strip()]
@@ -173,7 +187,8 @@ class Settings:
             api_key=api_key,
             base_url=(env("DEEPSEEK_BASE_URL", "").strip() or DEFAULT_BASE_URL).rstrip("/"),
             models=deepseek_models,
-            data_dir=Path(env("SELFAI_DATA_DIR", "").strip() or "data"),
+            # Serverless hosts only allow writing to /tmp (the real data is in Supabase).
+            data_dir=Path(env("SELFAI_DATA_DIR", "").strip() or ("/tmp/selfai" if cloud else "data")),
             host=env("SELFAI_HOST", "").strip() or "127.0.0.1",
             port=_env_int("SELFAI_PORT", 8000),
             password=env("SELFAI_PASSWORD", ""),
@@ -185,7 +200,7 @@ class Settings:
             ],
             chat_max_steps=_env_int("SELFAI_CHAT_MAX_STEPS", 15 if compact else 25),
             task_max_steps=_env_int("SELFAI_TASK_MAX_STEPS", 30 if compact else 50),
-            tool_timeout_seconds=_env_int("SELFAI_TOOL_TIMEOUT", 120),
+            tool_timeout_seconds=_env_int("SELFAI_TOOL_TIMEOUT", 60 if cloud else 120),
             max_tool_result_chars=_env_int("SELFAI_MAX_TOOL_RESULT_CHARS", 6_000 if compact else 20_000),
             history_max_chars=_env_int("SELFAI_HISTORY_MAX_CHARS", default_history),
             max_concurrent_tasks=max(1, _env_int("SELFAI_MAX_CONCURRENT_TASKS", 1 if local else 2)),
@@ -193,5 +208,13 @@ class Settings:
             scheduler_poll_seconds=_env_float("SELFAI_SCHEDULER_POLL_SECONDS", 5.0),
             allow_private_network=_env_bool("SELFAI_ALLOW_PRIVATE_NETWORK", False),
             tavily_api_key=env("TAVILY_API_KEY", "").strip(),
-            max_download_mb=_env_int("SELFAI_MAX_DOWNLOAD_MB", 50),
+            # Serverless requests carry at most ~4.5 MB.
+            max_download_mb=_env_int("SELFAI_MAX_DOWNLOAD_MB", 4 if cloud else 50),
+            cloud=cloud,
+            supabase_url=supabase_url,
+            supabase_key=env("SELFAI_SUPABASE_KEY", "").strip(),
+            db_secret=env("SELFAI_DB_SECRET", "").strip(),
+            cron_secret=env("SELFAI_CRON_SECRET", "").strip(),
+            # Serverless functions are stopped after 300 s: finish replies and task runs before that.
+            run_time_limit=_env_float("SELFAI_RUN_TIME_LIMIT", 240.0 if cloud else 0.0),
         )

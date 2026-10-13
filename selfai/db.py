@@ -220,6 +220,14 @@ class Database:
         cols = ", ".join(f"{k} = ?" for k in fields)
         self._execute(f"UPDATE tasks SET {cols} WHERE id = ?", (*fields.values(), task_id))
 
+    def claim_task(self, task_id: str) -> bool:
+        """Mark a due task as running, unless something else already did."""
+        cur = self._execute(
+            "UPDATE tasks SET status = ?, updated_at = ? WHERE id = ? AND status = ?",
+            (RUNNING, _now(), task_id, PENDING),
+        )
+        return cur.rowcount > 0
+
     def delete_task(self, task_id: str) -> None:
         self._execute("DELETE FROM tasks WHERE id = ?", (task_id,))
 
@@ -248,6 +256,11 @@ class Database:
                 (PENDING, now, now, RUNNING),
             )
             return cur.rowcount
+
+    def stale_runs(self, started_before: float) -> list[dict]:
+        return self._all(
+            "SELECT * FROM task_runs WHERE status = ? AND started_at < ? ORDER BY id", (RUNNING, started_before)
+        )
 
     def create_run(self, task_id: str) -> int:
         cur = self._execute(

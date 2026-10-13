@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import mimetypes
 import shutil
@@ -39,6 +40,7 @@ from .providers import (
     local_model,
     pick_model,
 )
+from .remote import RemoteDatabase, WorkspaceSync
 from .tasks import TaskManager
 from .tools import ToolError, build_registry
 from .tools.files import list_entries, relative, resolve_path
@@ -140,15 +142,33 @@ def create_app(
     llm: LLM | None = None,
     ollama: OllamaClient | None = None,
     cloud_transport: httpx.AsyncBaseTransport | None = None,
+    storage_transport: httpx.BaseTransport | None = None,
 ) -> Starlette:
     settings = settings or Settings.from_env()
     settings.ensure_dirs()
-    db = Database(settings.db_path)
+    files: WorkspaceSync | None = None
+    if settings.cloud:
+        # The web version: no lasting disk, so everything is stored in Supabase.
+        missing = [
+            n
+            for n, v in (
+                ("SELFAI_SUPABASE_KEY", settings.supabase_key),
+                ("SELFAI_DB_SECRET", settings.db_secret),
+                ("SELFAI_PASSWORD", settings.password),
+            )
+            if not v
+        ]
+        if missing:
+            raise RuntimeError(f"The web version needs these settings: {', '.join(missing)}")
+        db = RemoteDatabase(settings.supabase_url, settings.supabase_key, settings.db_secret, storage_transport)
+        files = WorkspaceSync(db, settings.workspace_dir, settings.max_download_mb * 1024 * 1024)
+    else:
+        db = Database(settings.db_path)
     ollama = ollama or OllamaClient(settings.ollama_url, log_path=settings.data_dir / "ollama.log")
     agent = Agent(llm or RoutingLLM(settings, db, ollama, cloud_transport), build_registry(), settings)
     cloud_models = CloudModels(cloud_transport)
-    tasks = TaskManager(db, agent, settings)
-    chat = ChatService(db, agent, settings, tasks)
+    tasks = TaskManager(db, agent, settings, files)
+    chat = ChatService(db, agent, settings, tasks, files)
     models = ModelManager(ollama, db, settings)
     workspace = settings.workspace_dir
 
@@ -221,6 +241,7 @@ def create_app(
         return JSONResponse(
             {
                 "version": __version__,
+                "cloud": settings.cloud,
                 "provider": pid,
                 "provider_name": provider_name(pid),
                 "model": model,
@@ -238,18 +259,20 @@ def create_app(
 
     def providers_list() -> list[dict]:
         pid = active_provider(db, settings)
-        items = [
-            {
-                "id": LOCAL,
-                "name": "On this device",
-                "free": True,
-                "private": True,
-                "description": "Free and private: your chats never leave the device, and it works offline. "
-                "Slower on phones.",
-                "has_key": True,
-                "active": pid == LOCAL,
-            }
-        ]
+        items = []
+        if not settings.cloud:
+            items.append(
+                {
+                    "id": LOCAL,
+                    "name": "On this device",
+                    "free": True,
+                    "private": True,
+                    "description": "Free and private: your chats never leave the device, and it works offline. "
+                    "Slower on phones.",
+                    "has_key": True,
+                    "active": pid == LOCAL,
+                }
+            )
         for provider_id in CLOUD_PROVIDERS:
             provider = cloud_provider(provider_id, settings)
             items.append(
@@ -269,7 +292,7 @@ def create_app(
     async def set_provider(request: Request) -> JSONResponse:
         data = await json_body(request)
         pid = text_field(data, "provider", required=True).strip()
-        if pid != LOCAL and pid not in CLOUD_PROVIDERS:
+        if (pid != LOCAL or settings.cloud) and pid not in CLOUD_PROVIDERS:
             raise HTTPException(400, f"Unknown AI provider '{pid}'.")
         key = text_field(data, "api_key", max_len=500).strip()
         if pid != LOCAL:
@@ -288,9 +311,14 @@ def create_app(
         return JSONResponse({"active": pid, "providers": providers_list()})
 
     async def list_models(request: Request) -> JSONResponse:
+        if settings.cloud:  # no models on a web server: only the cloud AIs
+            return JSONResponse(
+                {"cloud": True, "provider": active_provider(db, settings), "providers": providers_list()}
+            )
         ram = device_ram_gb()
         android = is_android()
         result: dict = {
+            "cloud": False,
             "provider": active_provider(db, settings),
             "providers": providers_list(),
             "active": local_model(db, settings),
@@ -318,6 +346,8 @@ def create_app(
         return JSONResponse(result)
 
     async def pull_model(request: Request) -> JSONResponse:
+        if settings.cloud:
+            raise HTTPException(400, "The web version can't download models. Pick a cloud AI instead.")
         name = text_field(await json_body(request), "name", required=True)
         try:
             models.start_pull(name)
@@ -388,18 +418,25 @@ def create_app(
         queue = chat.start(conv_id, content, model, think)
 
         async def events():
-            while True:
-                try:
-                    ev = await asyncio.wait_for(queue.get(), timeout=KEEPALIVE_SECONDS)
-                except asyncio.TimeoutError:
-                    # A phone can take a minute to read the prompt before the first word;
-                    # keep the connection visibly alive meanwhile.
-                    yield ": keep-alive\n\n"
-                    continue
-                if ev is None:
-                    yield "event: end\ndata: {}\n\n"
-                    return
-                yield f"data: {json.dumps(ev)}\n\n"
+            try:
+                while True:
+                    try:
+                        ev = await asyncio.wait_for(queue.get(), timeout=KEEPALIVE_SECONDS)
+                    except asyncio.TimeoutError:
+                        # A phone can take a minute to read the prompt before the first word;
+                        # keep the connection visibly alive meanwhile.
+                        yield ": keep-alive\n\n"
+                        continue
+                    if ev is None:
+                        yield "event: end\ndata: {}\n\n"
+                        return
+                    yield f"data: {json.dumps(ev)}\n\n"
+            finally:
+                run = chat.runs.get(conv_id)
+                if settings.cloud and run and not run.task.done():
+                    # A web server stops working once the browser has gone, so stop now and
+                    # save what was written (locally, the reply keeps going in the background).
+                    run.task.cancel()
 
         return StreamingResponse(
             events(),
@@ -467,7 +504,16 @@ def create_app(
 
     # ------------------------------------------------------------------ files
 
+    async def pull_files() -> None:
+        if files:
+            await files.pull()
+
+    async def push_files() -> None:
+        if files:
+            await files.push()
+
     async def list_files(request: Request) -> JSONResponse:
+        await pull_files()
         path = request.query_params.get("path", ".")
         try:
             entries = list_entries(workspace, path)
@@ -476,6 +522,7 @@ def create_app(
         return JSONResponse({"path": relative(workspace, workspace_path(path)), "entries": entries})
 
     async def read_raw(request: Request) -> FileResponse:
+        await pull_files()
         target = workspace_path(request.query_params.get("path"))
         if not target.is_file():
             raise HTTPException(404, "File not found")
@@ -498,6 +545,7 @@ def create_app(
         )
 
     async def upload_file(request: Request) -> JSONResponse:
+        await pull_files()
         target = workspace_path(request.query_params.get("path"))
         if target == workspace.resolve() or target.is_dir():
             raise HTTPException(400, "Path must include a file name")
@@ -515,9 +563,11 @@ def create_app(
             tmp.replace(target)
         finally:
             tmp.unlink(missing_ok=True)
+        await push_files()
         return JSONResponse({"path": relative(workspace, target), "size": size})
 
     async def delete_file(request: Request) -> JSONResponse:
+        await pull_files()
         target = workspace_path(request.query_params.get("path"))
         if target == workspace.resolve():
             raise HTTPException(400, "Refusing to delete the workspace")
@@ -527,7 +577,17 @@ def create_app(
             shutil.rmtree(target)
         else:
             target.unlink()
+        await push_files()
         return JSONResponse({"ok": True})
+
+    # ------------------------------------------------------------------ scheduler (web version)
+
+    async def cron_tick(request: Request) -> JSONResponse:
+        """Called every minute by the database's scheduler while tasks are due (see deploy/)."""
+        given = request.headers.get("x-selfai-cron", "")
+        if not settings.cron_secret or not hmac.compare_digest(given.encode(), settings.cron_secret.encode()):
+            raise HTTPException(403, "Forbidden")
+        return JSONResponse(await tasks.tick())
 
     # ------------------------------------------------------------------ UI
 
@@ -578,6 +638,7 @@ def create_app(
         Route("/api/files", delete_file, methods=["DELETE"]),
         Route("/api/files/raw", read_raw),
         Route("/api/files/raw", upload_file, methods=["PUT"]),
+        Route("/api/cron/tick", cron_tick, methods=["POST"]),
         Mount("/static", StaticFiles(directory=STATIC_DIR), name="static"),
     ]
     app = Starlette(routes=routes, lifespan=lifespan, exception_handlers={HTTPException: http_error})
@@ -585,6 +646,7 @@ def create_app(
     app.add_middleware(AuthMiddleware, password=settings.password)
     app.state.settings = settings
     app.state.db = db
+    app.state.files = files
     app.state.tasks = tasks
     app.state.chat = chat
     app.state.models = models

@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from ..config import Settings
+
+log = logging.getLogger("selfai.tools")
 
 if TYPE_CHECKING:
     from ..tasks import TaskManager
@@ -23,6 +26,8 @@ class ToolContext:
     tasks: "TaskManager | None" = None
     # "chat:<conversation id>" or "task:<task id>"
     origin: str = "chat"
+    # Called after every tool call (the web version saves changed workspace files with it).
+    after_tool: Callable[[], Awaitable[None]] | None = None
 
 
 Handler = Callable[..., Awaitable[str]]
@@ -58,6 +63,16 @@ class ToolRegistry:
 
     async def execute(self, name: str, raw_arguments: str, ctx: ToolContext) -> tuple[bool, str]:
         """Run a tool call. Returns (ok, text result). Never raises for tool-level failures."""
+        try:
+            return await self._execute(name, raw_arguments, ctx)
+        finally:
+            if ctx.after_tool:
+                try:
+                    await ctx.after_tool()
+                except Exception:  # noqa: BLE001 - the tool's own result still counts
+                    log.exception("Saving workspace files failed")
+
+    async def _execute(self, name: str, raw_arguments: str, ctx: ToolContext) -> tuple[bool, str]:
         tool = self.tools.get(name)
         if tool is None:
             return False, f"Error: unknown tool '{name}'. Available: {', '.join(self.tools)}"

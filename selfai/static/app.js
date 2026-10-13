@@ -742,6 +742,8 @@ const NOT_RUNNING_HELP =
   "Self-AI isn't running. Tap the **Self-AI** widget on your home screen, or open Termux and type `selfai`. " +
   'This page connects by itself as soon as it is running.';
 
+const CLOUD_OFFLINE_HELP = "Can't reach Self-AI. Check your internet connection; this page reconnects by itself.";
+
 const OFFLINE_HELP =
   "Lost connection to Self-AI: it stopped running. On a phone this usually means Android closed Termux to free " +
   'memory. Open Termux and type `selfai` to start it again; this page reconnects by itself. If it keeps happening, ' +
@@ -757,6 +759,12 @@ async function serverReachable() {
 
 // The reply runs on the server, so a dropped connection doesn't lose it if Self-AI is still running.
 async function recoverFromDisconnect(convId, view) {
+  if (state.status && state.status.cloud) {
+    // The website stops a reply when the connection drops; show what was saved.
+    view.addNotice('The connection dropped. Loading what was saved…');
+    if (state.convId === convId) setTimeout(() => openConversation(convId, { updateHash: false }), 300);
+    return;
+  }
   if (await serverReachable()) {
     view.addNotice('The connection dropped. Reconnecting…');
     if (state.convId === convId) setTimeout(() => openConversation(convId, { updateHash: false }), 300);
@@ -1164,7 +1172,7 @@ async function loadStatus() {
     state.status = await api('/api/status');
   } catch {
     const banner = $('#setup-banner');
-    banner.innerHTML = richText(NOT_RUNNING_HELP);
+    banner.innerHTML = richText(state.status && state.status.cloud ? CLOUD_OFFLINE_HELP : NOT_RUNNING_HELP);
     banner.classList.remove('hidden');
     $('#status-line').innerHTML = '';
     $('#status-line').append(el('div', {}, el('span', { class: 'dot bad' }), 'Not running'));
@@ -1292,6 +1300,12 @@ async function loadModels() {
   state.models = data;
   if (state.view !== 'models') return;
   renderProviders(data.providers);
+  $('#local-models').classList.toggle('hidden', data.cloud);
+  if (data.cloud) {
+    // The website runs on a server with no AI models of its own: only the cloud AIs.
+    $('#providers-note').textContent = 'Pick the AI that answers. Each is free with a key you can get in a minute; your messages are sent to that company.';
+    return;
+  }
 
   const suggested = data.recommended.find((r) => r.name === data.suggested);
   $('#models-device').textContent = data.ram_gb

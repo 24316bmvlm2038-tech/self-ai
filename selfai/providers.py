@@ -87,7 +87,7 @@ NOT_CHAT = ("whisper", "tts", "embed", "guard", "orpheus", "image", "imagen", "v
 
 def active_provider(db: Database, settings: Settings) -> str:
     chosen = db.get_setting("provider")
-    if chosen == LOCAL or chosen in CLOUD_PROVIDERS:
+    if (chosen == LOCAL and not settings.cloud) or chosen in CLOUD_PROVIDERS:
         return chosen
     return settings.provider
 
