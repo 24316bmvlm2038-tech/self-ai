@@ -174,6 +174,17 @@ def create_app(
 
     # ------------------------------------------------------------------ status & models
 
+    def public_url() -> str | None:
+        """The address Self-AI can be opened at from anywhere, if a tunnel is set up."""
+        if settings.public_url != "quick":
+            return settings.public_url or None
+        # Instant links are random and change on every start; start.sh saves the current one.
+        try:
+            link = (settings.data_dir / "public_url.txt").read_text().strip()
+        except OSError:
+            return None
+        return link if link.startswith("https://") else None
+
     def provider_name(pid: str) -> str:
         return "On this device" if pid == LOCAL else cloud_provider(pid, settings).name
 
@@ -218,7 +229,7 @@ def create_app(
                 "ready": problem is None,
                 "problem": problem,
                 "problem_code": code if problem else None,
-                "public_url": settings.public_url or None,
+                "public_url": public_url(),
                 "search_provider": "tavily" if settings.tavily_api_key else "duckduckgo",
                 "workspace": str(workspace.resolve()),
                 "tasks": {"running": len(db.list_tasks(RUNNING)), "pending": len(db.list_tasks(PENDING))},

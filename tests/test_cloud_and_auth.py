@@ -183,3 +183,14 @@ def test_never_exposed_without_password(settings):
         assert client.get("/api/status").status_code == 200
         blocked = client.get("/", headers={"CF-Connecting-IP": "203.0.113.9", "Host": "localhost"})
         assert blocked.status_code == 403 and "SELFAI_PASSWORD" in blocked.text
+
+
+def test_instant_web_link_is_shown_in_the_app(settings):
+    settings.public_url = "quick"
+    with TestClient(create_app(settings, None, FakeOllama().client())) as client:
+        assert client.get("/api/status").json()["public_url"] is None  # tunnel hasn't reported a link yet
+        (settings.data_dir / "public_url.txt").write_text("https://brave-otter.trycloudflare.com\n")
+        assert client.get("/api/status").json()["public_url"] == "https://brave-otter.trycloudflare.com"
+    settings.public_url = "https://ai.example.dpdns.org"
+    with TestClient(create_app(settings, None, FakeOllama().client())) as client:
+        assert client.get("/api/status").json()["public_url"] == "https://ai.example.dpdns.org"

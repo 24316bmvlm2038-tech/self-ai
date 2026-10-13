@@ -48,20 +48,26 @@ A phone's processor is slow at running AI. For answers in seconds, let a free cl
 
 Everything else (web search, files, background tasks) works the same. Your messages are sent to that company instead of staying on the phone. Free plans have daily limits; if you reach one, switch to the other service or back to **On this device**.
 
-### Get a web address
+### Open it on the web (not just localhost)
 
-Give Self-AI a real address like `https://ai.yourname.dpdns.org` that opens it from any browser, on any device. It's free, but it takes about 15 minutes to set up once. The address only works while Self-AI is running on your phone.
+Self-AI normally opens at `http://localhost:8000`, which only works on the phone itself. A free Cloudflare Tunnel gives it a real `https://` address that opens from any browser, on any device. The address only works while Self-AI is running on your phone.
+
+**Instant link (1 minute, no account):** in Termux, run:
+
+```
+cd ~/self-ai && git pull && bash setup-url.sh
+```
+
+Choose a password, then just press **Enter** when it asks for an address. Restart Self-AI (`selfai`). Termux and the bottom of the app's menu (☰) then show your link, like `https://brave-otter-sunny-lake.trycloudflare.com`. The link changes every time Self-AI restarts.
+
+**Your own permanent address (free, about 15 minutes once),** like `https://ai.yourname.dpdns.org`:
 
 1. **Get a free domain:** go to [domain.digitalplat.org](https://domain.digitalplat.org), sign up, search for a name, and register it (e.g. `yourname.dpdns.org`).
 2. **Add it to Cloudflare (free):** sign up at [dash.cloudflare.com](https://dash.cloudflare.com), tap **Add a domain**, enter your domain, and choose the **Free** plan. Cloudflare shows two nameservers. Copy them into your domain's nameserver settings on DigitalPlat, then wait until Cloudflare says the domain is **Active** (minutes to a few hours).
-3. **Connect it:** in Termux, run:
+3. Run `bash setup-url.sh` again and type your address (e.g. `ai.yourname.dpdns.org`). When a Cloudflare page opens, tap your domain and **Authorize**.
+4. Restart Self-AI (`selfai`).
 
-   ```
-   cd ~/self-ai && git pull && bash setup-url.sh
-   ```
-
-   Enter the address you want (e.g. `ai.yourname.dpdns.org`) and choose a password. When a Cloudflare page opens, tap your domain and **Authorize**.
-4. Restart Self-AI (`selfai`). Your address now opens Self-AI from anywhere. Visitors must sign in with your password; on the phone itself you're never asked.
+With either kind of address, visitors must sign in with your password; on the phone itself you're never asked.
 
 ### Use it like a normal app
 

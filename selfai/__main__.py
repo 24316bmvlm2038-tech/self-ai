@@ -40,7 +40,9 @@ def main() -> None:
             log.warning("Ollama is not running at %s - start it with `ollama serve`.", settings.ollama_url)
     else:
         log.info("Using the %s API (you can switch in the app under AI & models)", settings.provider)
-    if settings.public_url:
+    if settings.public_url == "quick":
+        log.info("Web address: an instant link, shown in the app's menu")
+    elif settings.public_url:
         log.info("Web address: %s", settings.public_url)
     log.info("Workspace: %s", settings.workspace_dir.resolve())
     log.info(

@@ -34,10 +34,10 @@ if [ ! -f .env ]; then
   fi
 fi
 
-read -r port public_url has_password < <(python -c "
+read -r port public_url has_password data_dir < <(python -c "
 from selfai.config import Settings
 s = Settings.from_env()
-print(s.port, s.public_url or '-', 'yes' if s.password else 'no')")
+print(s.port, s.public_url or '-', 'yes' if s.password else 'no', s.data_dir)")
 open_app() {
   if $termux && [ -z "${SELFAI_NO_BROWSER:-}" ] && command -v termux-open-url >/dev/null 2>&1; then
     termux-open-url "http://localhost:$port"
@@ -57,14 +57,32 @@ fi
 
 # Web address (set up with setup-url.sh): keep the Cloudflare tunnel running.
 tunnel_config="$HOME/.cloudflared/selfai.yml"
-if [ "$public_url" != "-" ] && [ -f "$tunnel_config" ] && command -v cloudflared >/dev/null 2>&1; then
-  mkdir -p data
+if [ "$public_url" != "-" ] && command -v cloudflared >/dev/null 2>&1; then
+  mkdir -p "$data_dir"
   if [ "$has_password" != "yes" ]; then
-    echo "Not opening $public_url: no password is set. Run: bash setup-url.sh"
-  elif ! { [ -f data/tunnel.pid ] && kill -0 "$(cat data/tunnel.pid)" 2>/dev/null; }; then
-    echo "Opening the web address $public_url"
-    nohup cloudflared tunnel --no-autoupdate --config "$tunnel_config" run > data/tunnel.log 2>&1 &
-    echo $! > data/tunnel.pid
+    echo "Not opening the web address: no password is set. Run: bash setup-url.sh"
+  elif ! { [ -f "$data_dir/tunnel.pid" ] && kill -0 "$(cat "$data_dir/tunnel.pid")" 2>/dev/null; }; then
+    if [ "$public_url" = "quick" ]; then
+      # Instant link: Cloudflare picks a random https://...trycloudflare.com address.
+      rm -f "$data_dir/public_url.txt"
+      nohup cloudflared tunnel --no-autoupdate --url "http://localhost:$port" > "$data_dir/tunnel.log" 2>&1 &
+      echo $! > "$data_dir/tunnel.pid"
+      echo "Getting your web link..."
+      for _ in $(seq 1 30); do
+        link=$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' "$data_dir/tunnel.log" 2>/dev/null | head -n 1 || true)
+        [ -n "$link" ] && { echo "$link" > "$data_dir/public_url.txt"; break; }
+        sleep 1
+      done
+      [ -z "${link:-}" ] && echo "No web link yet; see $data_dir/tunnel.log if it doesn't appear in the app."
+    elif [ -f "$tunnel_config" ]; then
+      nohup cloudflared tunnel --no-autoupdate --config "$tunnel_config" run > "$data_dir/tunnel.log" 2>&1 &
+      echo $! > "$data_dir/tunnel.pid"
+    fi
+  fi
+  if [ "$public_url" = "quick" ]; then
+    [ -f "$data_dir/public_url.txt" ] && echo "Web address: $(cat "$data_dir/public_url.txt")"
+  elif [ -f "$tunnel_config" ]; then
+    echo "Web address: $public_url"
   fi
 fi
 
