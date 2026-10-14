@@ -1,0 +1,10 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "regions": ["fra1"],
+  "functions": {
+    "app.py": {
+      "maxDuration": 300,
+      "excludeFiles": "{tests/**,deploy/**,data/**,.venv/**,**/__pycache__/**,*.sh,*.bat,Dockerfile,docker-compose.yml}"
+    }
+  }
+}

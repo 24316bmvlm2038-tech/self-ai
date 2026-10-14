@@ -4,7 +4,7 @@
 -- The tables are only reachable with the app's secret (X-SelfAI-Secret header), enforced by
 -- row-level security; the public API key alone can't read or change anything.
 
-create extension if not exists pg_net;
+create extension if not exists pg_net with schema extensions;
 create extension if not exists pg_cron;
 
 -- ------------------------------------------------------------------ app data
