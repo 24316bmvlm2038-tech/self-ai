@@ -161,11 +161,28 @@ select cron.schedule('selfai-tick', '* * * * *', $$
     or (extract(hour from now()) = 4 and extract(minute from now()) = 0)
 $$);
 
+-- The web server registers its own address here (it knows it; the scheduler needs it).
+create or replace function public.selfai_register(tick_url text) returns void
+language plpgsql security definer set search_path = '' as $$
+begin
+  if not private.authorized() then
+    raise exception 'not authorized' using errcode = '42501';
+  end if;
+  if tick_url !~ '^https://[A-Za-z0-9.-]+/api/cron/tick$' then
+    raise exception 'not a Self-AI address: %', tick_url using errcode = '22023';
+  end if;
+  insert into private.config (key, value) values ('tick_url', tick_url)
+  on conflict (key) do update set value = excluded.value;
+end $$;
+revoke all on function public.selfai_register(text) from public;
+grant execute on function public.selfai_register(text) to anon;
+
 -- ------------------------------------------------------------------ your settings
--- Use long random values for both secrets, and put the same values in the web server's
--- environment variables (SELFAI_DB_SECRET and SELFAI_CRON_SECRET):
+-- Pick a long random secret and put the same value in the web server's SELFAI_DB_SECRET
+-- environment variable. The scheduler's secret is derived from it: run
+--   python -c "from selfai.config import derived_secret; print(derived_secret('<secret>', 'cron'))"
+-- (or set your own as SELFAI_CRON_SECRET on the server).
 --
 -- insert into private.config (key, value) values
---   ('db_secret', '<random secret 1>'),
---   ('cron_secret', '<random secret 2>'),
---   ('tick_url', 'https://<your-app>.vercel.app/api/cron/tick');
+--   ('db_secret', '<your secret>'),
+--   ('cron_secret', '<the derived value>');

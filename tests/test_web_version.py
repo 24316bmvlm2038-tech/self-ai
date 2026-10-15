@@ -11,7 +11,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from selfai import db as store
-from selfai.config import Settings
+from selfai.config import Settings, derived_secret
 from selfai.db import Database
 from selfai.remote import RemoteDatabase, StorageError
 from selfai.server import create_app
@@ -42,6 +42,7 @@ def web_settings(tmp_path, supabase):
         db_secret=supabase.secret,
         cron_secret="tick-secret",
         password="correct horse",
+        public_url="https://self-ai.example.app",
         run_time_limit=60,
         allow_private_network=True,
         tool_timeout_seconds=10,
@@ -137,13 +138,17 @@ def test_web_settings_from_environment(monkeypatch):
         "SELFAI_SUPABASE_URL": "https://abc.supabase.co/",
         "SELFAI_SUPABASE_KEY": "sb_publishable_x",
         "SELFAI_DB_SECRET": "db",
-        "SELFAI_CRON_SECRET": "cron",
         "SELFAI_PROVIDER": "ollama",  # not possible on a web server
+        "VERCEL_PROJECT_PRODUCTION_URL": "self-ai-me.vercel.app",  # set by Vercel
     }.items():
         monkeypatch.setenv(name, value)
     s = Settings.from_env(env_file=None)
     assert s.cloud and s.supabase_url == "https://abc.supabase.co" and s.provider == "groq"
     assert str(s.data_dir) == "/tmp/selfai" and s.run_time_limit == 240 and s.max_download_mb == 4
+    assert s.public_url == "https://self-ai-me.vercel.app"
+    assert s.cron_secret == derived_secret("db", "cron") and len(s.cron_secret) == 64  # one secret is enough
+    monkeypatch.setenv("SELFAI_CRON_SECRET", "cron")
+    assert Settings.from_env(env_file=None).cron_secret == "cron"
     monkeypatch.delenv("SELFAI_SUPABASE_URL")
     assert not Settings.from_env(env_file=None).cloud
 
@@ -163,6 +168,8 @@ def test_web_version_chat_and_files_survive_a_new_server(web_settings, supabase,
         assert client.get("/api/status", headers={"Authorization": ""}).status_code == 401  # password needed
         status = client.get("/api/status").json()
         assert status["cloud"] and status["ready"] and status["provider"] == "groq"
+        # The site tells the database's scheduler where to send task wake-ups.
+        assert supabase.config["tick_url"] == "https://self-ai.example.app/api/cron/tick"
         models = client.get("/api/models").json()
         assert models["cloud"] and "ollama" not in [p["id"] for p in models["providers"]]
         assert client.post("/api/providers/active", json={"provider": "ollama"}, headers=H).status_code == 400

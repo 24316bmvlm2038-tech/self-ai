@@ -293,6 +293,17 @@ class RemoteDatabase:
     def delete_file(self, path: str) -> None:
         self._delete("files", {"path": f"eq.{path}"})
 
+    # ------------------------------------------------------------------ scheduler
+
+    def register_tick_url(self, url: str) -> None:
+        """Tell the database's scheduler where to wake this server (see deploy/supabase.sql)."""
+        try:
+            resp = self._client.post("/rpc/selfai_register", json={"tick_url": url})
+        except httpx.TransportError as exc:
+            raise StorageError(f"Could not reach the database: {exc}") from exc
+        if resp.status_code >= 400:
+            raise StorageError(f"Database error {resp.status_code} registering {url}: {resp.text[:300]}")
+
 
 def _sha1(data: bytes) -> str:
     return hashlib.sha1(data).hexdigest()  # noqa: S324 - change detection, not security

@@ -92,6 +92,7 @@ class FakeSupabase:
         self.tables: dict[str, list[dict]] = {name: [] for name in SCHEMA}
         self.next_id = dict.fromkeys(SCHEMA, 1)
         self.requests: list[tuple[str, str]] = []
+        self.config: dict[str, str] = {}  # the database's private settings
 
     def transport(self) -> httpx.MockTransport:
         return httpx.MockTransport(self.handle)
@@ -124,6 +125,11 @@ class FakeSupabase:
         assert request.headers.get("apikey") == self.api_key, "missing API key"
         table = request.url.path.removeprefix("/rest/v1/")
         self.requests.append((request.method, table))
+        if table == "rpc/selfai_register":
+            if request.headers.get("x-selfai-secret") != self.secret:
+                return httpx.Response(401, json={"code": "42501", "message": "not authorized"})
+            self.config["tick_url"] = json.loads(request.content)["tick_url"]
+            return httpx.Response(204)
         if table not in SCHEMA:
             return httpx.Response(404, json={"message": f"relation {table} does not exist"})
         authorized = request.headers.get("x-selfai-secret") == self.secret

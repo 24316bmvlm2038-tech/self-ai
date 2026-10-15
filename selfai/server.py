@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import json
+import logging
 import mimetypes
 import shutil
 from contextlib import asynccontextmanager
@@ -40,11 +41,12 @@ from .providers import (
     local_model,
     pick_model,
 )
-from .remote import RemoteDatabase, WorkspaceSync
+from .remote import RemoteDatabase, StorageError, WorkspaceSync
 from .tasks import TaskManager
 from .tools import ToolError, build_registry
 from .tools.files import list_entries, relative, resolve_path
 
+log = logging.getLogger("selfai.server")
 STATIC_DIR = Path(__file__).parent / "static"
 KEEPALIVE_SECONDS = 10.0
 mimetypes.add_type("application/manifest+json", ".webmanifest")
@@ -208,7 +210,22 @@ def create_app(
     def provider_name(pid: str) -> str:
         return "On this device" if pid == LOCAL else cloud_provider(pid, settings).name
 
+    registered: list[str] = []
+
+    def register_with_scheduler() -> None:
+        """Web version: let the database's scheduler know this site's address (once per server)."""
+        url = f"{settings.public_url}/api/cron/tick"
+        if not settings.cloud or not settings.public_url or url in registered:
+            return
+        try:
+            db.register_tick_url(url)
+        except StorageError:
+            log.exception("Could not register %s with the scheduler", url)
+        else:
+            registered.append(url)
+
     async def status(request: Request) -> JSONResponse:
+        register_with_scheduler()
         pid = active_provider(db, settings)
         problem, code = config_problem(db, settings), "config"
         model = active_model(db, settings)

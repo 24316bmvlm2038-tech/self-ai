@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -29,6 +31,13 @@ def load_dotenv(path: Path) -> None:
         values[key] = value
     for key, value in values.items():
         os.environ.setdefault(key, value)
+
+
+def derived_secret(secret: str, purpose: str) -> str:
+    """A separate secret for `purpose`, so one setting is enough (empty if `secret` is)."""
+    if not secret:
+        return ""
+    return hmac.new(secret.encode(), f"selfai-{purpose}-v1".encode(), hashlib.sha256).hexdigest()
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -192,7 +201,13 @@ class Settings:
             host=env("SELFAI_HOST", "").strip() or "127.0.0.1",
             port=_env_int("SELFAI_PORT", 8000),
             password=env("SELFAI_PASSWORD", ""),
-            public_url=env("SELFAI_PUBLIC_URL", "").strip().rstrip("/"),
+            # On Vercel, the site's own address is known without configuring it.
+            public_url=env("SELFAI_PUBLIC_URL", "").strip().rstrip("/")
+            or (
+                f"https://{env('VERCEL_PROJECT_PRODUCTION_URL')}"
+                if cloud and env("VERCEL_PROJECT_PRODUCTION_URL")
+                else ""
+            ),
             allowed_hosts=[
                 h.strip().lower()
                 for h in (env("SELFAI_ALLOWED_HOSTS", "").strip() or "localhost,127.0.0.1,::1").split(",")
@@ -214,7 +229,8 @@ class Settings:
             supabase_url=supabase_url,
             supabase_key=env("SELFAI_SUPABASE_KEY", "").strip(),
             db_secret=env("SELFAI_DB_SECRET", "").strip(),
-            cron_secret=env("SELFAI_CRON_SECRET", "").strip(),
+            cron_secret=env("SELFAI_CRON_SECRET", "").strip()
+            or derived_secret(env("SELFAI_DB_SECRET", "").strip(), "cron"),
             # Serverless functions are stopped after 300 s: finish replies and task runs before that.
             run_time_limit=_env_float("SELFAI_RUN_TIME_LIMIT", 240.0 if cloud else 0.0),
         )

@@ -69,6 +69,35 @@ Choose a password, then just press **Enter** when it asks for an address. Restar
 
 With either kind of address, visitors must sign in with your password; on the phone itself you're never asked.
 
+### Always-on website (no phone needed)
+
+Self-AI can also run as a website that's always online, even when your phone is off: free
+hosting on [Vercel](https://vercel.com), with chats, tasks and files stored in a free
+[Supabase](https://supabase.com) database. It uses the free cloud AIs (there's no model on the
+server), and background tasks keep running on schedule.
+
+1. **Database:** create a free Supabase project, open its **SQL Editor**, and run
+   [`deploy/supabase.sql`](deploy/supabase.sql). Then run the `insert` at the bottom of that
+   file with your own secret (the comment there shows how to get the second value).
+2. **Website:** at [vercel.com/new](https://vercel.com/new), import this GitHub repository.
+   Under **Environment Variables**, add:
+
+   | Name | Value |
+   | --- | --- |
+   | `SELFAI_SUPABASE_URL` | your project's URL, like `https://abcd.supabase.co` (Supabase → Project Settings → API) |
+   | `SELFAI_SUPABASE_KEY` | its **publishable** (or anon) key, from the same page |
+   | `SELFAI_DB_SECRET` | the secret you chose in step 1 |
+   | `SELFAI_PASSWORD` | the password for signing in to your site |
+
+   Tap **Deploy**. After about a minute you get an address like `https://self-ai-you.vercel.app`.
+3. **Open it,** sign in with your password, and add a free AI key under **☰ → AI & models**
+   (Groq is fastest). On a phone, use your browser's **Add to Home screen** to get the app icon.
+
+Every push to the repository updates the site. Limits of the free plans: one reply or task run
+can take up to about 4 minutes (longer runs stop with a note), uploaded and downloaded files up
+to 4 MB, and web search from a data center is sometimes blocked by DuckDuckGo (a free
+[Tavily](https://tavily.com) key, set as `TAVILY_API_KEY`, avoids that).
+
 ### Use it like a normal app
 
 1. **App icon:** open Self-AI in Chrome, tap **⋮ → Add to Home screen** (or **Install app**) → **Install**. It opens full-screen without the browser bar. If Self-AI isn't running, the app says so and connects by itself once it starts.
